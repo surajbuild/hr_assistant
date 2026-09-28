@@ -1,4 +1,4 @@
-﻿"""
+"""
 app/utils/dependencies.py
 --------------------------
 Reusable FastAPI dependencies.
@@ -10,6 +10,8 @@ get_current_user()
 
     Inject with:  user: User = Depends(get_current_user)
 """
+
+from typing import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -83,3 +85,29 @@ def get_current_user(
         )
 
     return user
+
+
+def require_role(*allowed_roles: str) -> Callable:
+    """
+    FastAPI dependency factory for role-based access control.
+
+    Example:
+        @router.get("/hr-only")
+        def hr_route(user: User = Depends(require_role("hr", "admin"))):
+            ...
+
+    Flow:
+    1. Authenticates the user via `get_current_user`.
+    2. Checks if `user.role` is in `allowed_roles`.
+    3. Raises 403 Forbidden if not.
+    4. Returns the User object if authorized.
+    """
+    def role_checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this action.",
+            )
+        return current_user
+
+    return role_checker
