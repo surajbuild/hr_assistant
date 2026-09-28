@@ -150,6 +150,16 @@ class User(Base):
     """
     Authentication and authorization record for a system user.
     Matches PRD Section 13 — users table.
+
+    Supports two authentication methods:
+      - Email + Password: password_hash is set; google_id is NULL.
+      - Google OAuth:     google_id is set;    password_hash is NULL.
+      - Both methods can coexist on the same account.
+
+    password_hash is nullable so that Google-OAuth-only accounts do not
+    need a fake placeholder password stored in the database.
+    google_id is nullable (not all users sign in via Google) and unique
+    (each Google account may only map to one system user).
     """
     __tablename__ = "users"
 
@@ -158,7 +168,13 @@ class User(Base):
         Integer, ForeignKey("employees.id"), unique=True, nullable=False
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable: Google-OAuth-only accounts will have NULL here
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Nullable: email/password accounts will have NULL here
+    # Unique: one Google account → one system user
+    google_id: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, nullable=True
+    )
     role: Mapped[str] = mapped_column(
         String(50), nullable=False, default=UserRole.EMPLOYEE.value
     )
