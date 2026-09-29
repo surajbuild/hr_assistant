@@ -5,7 +5,9 @@ Leave management routes.
 
 Endpoints
 ---------
-POST /leaves  — Create a new leave request (status=pending).
+POST /leaves                    — Create a new leave request (status=pending).
+GET /leaves/me                  — Get leave requests for the authenticated employee.
+PATCH /leaves/{leave_id}/status — Approve or reject a pending leave request (HR / Manager).
 """
 
 from datetime import date
@@ -16,7 +18,14 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import Leave, LeaveStatus, LeaveType, User
+from app.database.models import LeaveType, User
+from app.services import leave_service
+from app.services.leave_service import (
+    EmployeeNotFoundError,
+    InvalidLeaveDateError,
+    LeaveNotFoundError,
+    LeaveStatusError,
+)
 from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/leaves", tags=["Leaves"])
@@ -52,9 +61,11 @@ class LeaveResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class LeaveStatusUpdate(BaseModel):
     """Payload for approving/rejecting a leave."""
     status: Literal["approved", "rejected"]
+
 
 # ---------------------------------------------------------------------------
 # POST /leaves
@@ -74,9 +85,8 @@ def create_leave_request(
 ):
     """
     1. Verify current user has an employee record.
-    2. Map start_date/end_date to from_date/to_date.
-    3. Force status to PENDING.
-    4. Save to database.
+    2. Delegate leave creation to leave_service.
+    3. Return persisted leave record.
     """
     if not current_user.employee:
         raise HTTPException(
@@ -84,20 +94,25 @@ def create_leave_request(
             detail="Employee profile not found for the current user.",
         )
 
-    leave = Leave(
-        employee_id=current_user.employee.id,
-        leave_type=body.leave_type.value,
-        from_date=body.start_date,
-        to_date=body.end_date,
-        reason=body.reason,
-        status=LeaveStatus.PENDING.value,
-    )
-
-    db.add(leave)
-    db.commit()
-    db.refresh(leave)
-    
-    return leave
+    try:
+        return leave_service.create_leave_request(
+            db,
+            employee_id=current_user.employee.id,
+            leave_type=body.leave_type.value,
+            from_date=body.start_date,
+            to_date=body.end_date,
+            reason=body.reason,
+        )
+    except InvalidLeaveDateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except EmployeeNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +132,7 @@ def get_my_leaves(
 ):
     """
     1. Verify current user has an employee record.
-    2. Query Leave table for records belonging to this employee.
+    2. Delegate retrieval to leave_service.
     3. Return list (empty list if none found).
     """
     if not current_user.employee:
@@ -126,8 +141,10 @@ def get_my_leaves(
             detail="Employee profile not found for the current user.",
         )
 
-    leaves = db.query(Leave).filter(Leave.employee_id == current_user.employee.id).all()
-    return leaves
+    return leave_service.get_my_leaves(
+        db,
+        employee_id=current_user.employee.id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -148,29 +165,24 @@ def update_leave_status(
     db: Session = Depends(get_db),
 ):
     """
-    1. Verify current user has 'hr' or 'manager' role (handled by dependency).
-    2. Find the leave by ID.
-    3. Ensure it is currently 'pending'.
-    4. Update status and approved_by.
-    5. Save and return.
+    1. Verify current user has 'hr' or 'manager' role (enforced by dependency).
+    2. Delegate state transition and persistence to leave_service.
+    3. Catch domain exceptions and map to appropriate HTTP status codes.
     """
-    leave = db.query(Leave).filter(Leave.id == leave_id).first()
-    if not leave:
+    try:
+        return leave_service.update_leave_status(
+            db,
+            leave_id=leave_id,
+            status=body.status,
+            approved_by_user_id=current_user.id,
+        )
+    except LeaveNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Leave request not found.",
+            detail=str(exc),
         )
-    
-    if leave.status != LeaveStatus.PENDING.value:
+    except LeaveStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot update leave status. Current status is '{leave.status}'.",
+            detail=str(exc),
         )
-    
-    leave.status = body.status
-    leave.approved_by = current_user.id
-    
-    db.commit()
-    db.refresh(leave)
-    
-    return leave

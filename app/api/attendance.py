@@ -5,8 +5,10 @@ Attendance management routes.
 
 Endpoints
 ---------
-GET /attendance/me  — Get attendance records for the authenticated employee.
-POST /attendance    — Create a new attendance record.
+GET /attendance/me             — Get attendance records for the authenticated employee.
+POST /attendance               — Create a new attendance record (HR / Admin).
+GET /attendance/summary        — Get aggregated attendance summary for the authenticated employee.
+GET /attendance/{employee_id}  — Get attendance records for a specific employee (HR / Admin).
 """
 
 from datetime import date, time
@@ -14,11 +16,16 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import Attendance, AttendanceStatus, Employee, User
+from app.database.models import AttendanceStatus, User
+from app.services import attendance_service
+from app.services.attendance_service import (
+    DuplicateAttendanceError,
+    EmployeeNotFoundError,
+    InvalidDateRangeError,
+)
 from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
@@ -69,6 +76,7 @@ class AttendanceResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 # ---------------------------------------------------------------------------
 # GET /attendance/me
 # ---------------------------------------------------------------------------
@@ -86,7 +94,7 @@ def get_my_attendance(
 ):
     """
     1. Verify current user has an employee record.
-    2. Query Attendance table for records belonging to this employee.
+    2. Delegate attendance retrieval to attendance_service.
     3. Return list (empty list if none found).
     """
     if not current_user.employee:
@@ -95,8 +103,10 @@ def get_my_attendance(
             detail="Employee profile not found for the current user.",
         )
 
-    records = db.query(Attendance).filter(Attendance.employee_id == current_user.employee.id).all()
-    return records
+    return attendance_service.get_my_attendance(
+        db,
+        employee_id=current_user.employee.id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -116,45 +126,32 @@ def create_attendance(
     db: Session = Depends(get_db),
 ):
     """
-    1. Verify current user has 'hr' or 'admin' role.
-    2. Check if the specified employee exists.
-    3. Check if an attendance record already exists for that employee on that date.
-    4. Create and persist the new attendance record.
+    1. Verify current user has 'hr' or 'admin' role (enforced by dependency).
+    2. Delegate creation, validation, and persistence to attendance_service.
+    3. Catch domain exceptions and map to appropriate HTTP status codes.
     """
-    employee = db.query(Employee).filter(Employee.id == body.employee_id).first()
-    if not employee:
+    try:
+        return attendance_service.create_attendance(
+            db,
+            employee_id=body.employee_id,
+            attendance_date=body.attendance_date,
+            in_time=body.in_time,
+            out_time=body.out_time,
+            status=body.status.value,
+            working_minutes=body.working_minutes,
+            late_minutes=body.late_minutes,
+            overtime_minutes=body.overtime_minutes,
+        )
+    except EmployeeNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Employee not found.",
+            detail=str(exc),
         )
-
-    existing_record = db.query(Attendance).filter(
-        Attendance.employee_id == body.employee_id,
-        Attendance.attendance_date == body.attendance_date
-    ).first()
-    
-    if existing_record:
+    except DuplicateAttendanceError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Attendance record already exists for employee ID {body.employee_id} on {body.attendance_date}.",
+            detail=str(exc),
         )
-
-    attendance_record = Attendance(
-        employee_id=body.employee_id,
-        attendance_date=body.attendance_date,
-        in_time=body.in_time,
-        out_time=body.out_time,
-        working_minutes=body.working_minutes,
-        status=body.status.value,
-        late_minutes=body.late_minutes,
-        overtime_minutes=body.overtime_minutes,
-    )
-    
-    db.add(attendance_record)
-    db.commit()
-    db.refresh(attendance_record)
-    
-    return attendance_record
 
 
 # ---------------------------------------------------------------------------
@@ -176,56 +173,28 @@ def get_my_attendance_summary(
 ):
     """
     1. Verify current user has an employee record.
-    2. Validate date range.
-    3. Perform SQLAlchemy aggregations.
-    4. Return summary.
+    2. Delegate calculation and aggregation to attendance_service.
+    3. Return structured summary response.
     """
     if not current_user.employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee profile not found for the current user.",
         )
-        
-    if start_date and end_date and start_date > end_date:
+
+    try:
+        summary_data = attendance_service.get_attendance_summary(
+            db,
+            employee_id=current_user.employee.id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return AttendanceSummaryResponse(**summary_data)
+    except InvalidDateRangeError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="start_date cannot be after end_date.",
+            detail=str(exc),
         )
-
-    query = db.query(
-        func.count(Attendance.id).label("total_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.PRESENT.value, 1), else_=0)).label("present_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.ABSENT.value, 1), else_=0)).label("absent_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.HALF_DAY.value, 1), else_=0)).label("half_day_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.LEAVE.value, 1), else_=0)).label("leave_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.HOLIDAY.value, 1), else_=0)).label("holiday_days"),
-        func.sum(case((Attendance.status == AttendanceStatus.WEEKEND.value, 1), else_=0)).label("weekend_days"),
-        func.sum(case((Attendance.late_minutes > 0, 1), else_=0)).label("late_days"),
-        func.sum(case((Attendance.overtime_minutes > 0, 1), else_=0)).label("overtime_days"),
-        func.sum(Attendance.working_minutes).label("total_working_minutes"),
-        func.sum(Attendance.overtime_minutes).label("total_overtime_minutes"),
-    ).filter(Attendance.employee_id == current_user.employee.id)
-
-    if start_date:
-        query = query.filter(Attendance.attendance_date >= start_date)
-    if end_date:
-        query = query.filter(Attendance.attendance_date <= end_date)
-
-    result = query.one()
-
-    return AttendanceSummaryResponse(
-        total_days=result.total_days or 0,
-        present_days=result.present_days or 0,
-        absent_days=result.absent_days or 0,
-        half_day_days=result.half_day_days or 0,
-        leave_days=result.leave_days or 0,
-        holiday_days=result.holiday_days or 0,
-        weekend_days=result.weekend_days or 0,
-        late_days=result.late_days or 0,
-        overtime_days=result.overtime_days or 0,
-        total_working_minutes=result.total_working_minutes or 0,
-        total_overtime_minutes=result.total_overtime_minutes or 0,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -245,17 +214,17 @@ def get_employee_attendance(
     db: Session = Depends(get_db),
 ):
     """
-    1. Verify current user has 'hr' or 'admin' role.
-    2. Check if the specified employee exists.
-    3. Query and return all attendance records for this employee.
+    1. Verify current user has 'hr' or 'admin' role (enforced by dependency).
+    2. Delegate employee lookup and attendance retrieval to attendance_service.
+    3. Return list of attendance records or 404 if employee does not exist.
     """
-    employee = db.query(Employee).filter(Employee.id == employee_id).first()
-    if not employee:
+    try:
+        return attendance_service.get_attendance_for_employee(
+            db,
+            employee_id=employee_id,
+        )
+    except EmployeeNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Employee not found.",
+            detail=str(exc),
         )
-
-    records = db.query(Attendance).filter(Attendance.employee_id == employee_id).all()
-    return records
-

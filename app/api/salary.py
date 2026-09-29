@@ -5,7 +5,8 @@ Salary management routes.
 
 Endpoints
 ---------
-GET /salary/me  — Get salary records for the authenticated employee.
+GET /salary/me             — Get salary records for the authenticated employee.
+GET /salary/{employee_id}  — Get salary records for a specific employee.
 """
 
 from datetime import datetime
@@ -16,8 +17,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import Salary, User
-from app.utils.dependencies import get_current_user
+from app.database.models import Employee, Salary, User
+from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/salary", tags=["Salary"])
 
@@ -68,4 +69,36 @@ def get_my_salary(
         )
 
     records = db.query(Salary).filter(Salary.employee_id == current_user.employee.id).all()
+    return records
+
+
+# ---------------------------------------------------------------------------
+# GET /salary/{employee_id}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{employee_id}",
+    response_model=List[SalaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Get Employee Salary",
+    description="Allows HR or Admin to fetch salary records for a specific employee.",
+)
+def get_employee_salary(
+    employee_id: int,
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    """
+    1. Verify current user has 'hr' or 'admin' role.
+    2. Check if the specified employee exists.
+    3. Query and return all salary records for this employee.
+    """
+    employee = db.query(Employee).filter(Employee.id == employee_id).first()
+    if not employee:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee not found.",
+        )
+
+    records = db.query(Salary).filter(Salary.employee_id == employee_id).all()
     return records
