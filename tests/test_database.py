@@ -1,5 +1,5 @@
-﻿import sys, os, textwrap
-sys.path.insert(0, os.path.dirname(os.path.abspath('.')))
+import sys, os, textwrap
+sys.path.insert(0, os.path.abspath("."))
 from datetime import date
 from app.database.connection import SessionLocal
 from app.database.queries import (

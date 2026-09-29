@@ -52,6 +52,11 @@ def get_employee_by_code(db: Session, employee_code: str) -> Employee | None:
     return db.query(Employee).filter(Employee.employee_code == employee_code).first()
 
 
+def get_all_employees(db: Session) -> list[Employee]:
+    """Return all employee records from the database."""
+    return db.query(Employee).all()
+
+
 # ---------------------------------------------------------------------------
 # User queries
 # ---------------------------------------------------------------------------
@@ -61,7 +66,8 @@ def create_user(
     *,
     employee_id: int,
     email: str,
-    password_hash: str,
+    password_hash: str | None = None,
+    google_id: str | None = None,
     role: str = UserRole.EMPLOYEE.value,
     status: str = UserStatus.ACTIVE.value,
 ) -> User:
@@ -70,6 +76,7 @@ def create_user(
         employee_id=employee_id,
         email=email,
         password_hash=password_hash,
+        google_id=google_id,
         role=role,
         status=status,
     )
@@ -82,6 +89,11 @@ def create_user(
 def get_user_by_email(db: Session, email: str) -> User | None:
     """Return a user by their unique email, or None if not found."""
     return db.query(User).filter(User.email == email).first()
+
+
+def get_user_by_google_id(db: Session, google_id: str) -> User | None:
+    """Return a user by their unique google_id, or None if not found."""
+    return db.query(User).filter(User.google_id == google_id).first()
 
 
 def get_user_by_id(db: Session, user_id: int) -> User | None:

@@ -8,6 +8,7 @@ Endpoints
 POST /leaves                    — Create a new leave request (status=pending).
 GET /leaves/me                  — Get leave requests for the authenticated employee.
 PATCH /leaves/{leave_id}/status — Approve or reject a pending leave request (HR / Manager).
+GET /leaves/{employee_id}       — Get leave records for a specific employee (HR / Admin).
 """
 
 from datetime import date
@@ -184,5 +185,38 @@ def update_leave_status(
     except LeaveStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /leaves/{employee_id}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{employee_id}",
+    response_model=List[LeaveResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Get Employee Leaves",
+    description="Allows HR or Admin to fetch leave records for a specific employee.",
+)
+def get_employee_leaves(
+    employee_id: int,
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    """
+    1. Verify current user has 'hr' or 'admin' role (enforced by dependency).
+    2. Delegate employee verification and leave retrieval to leave_service.
+    3. Return list of leave records, or 404 if employee does not exist.
+    """
+    try:
+        return leave_service.get_leaves_for_employee(
+            db,
+            employee_id=employee_id,
+        )
+    except EmployeeNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         )

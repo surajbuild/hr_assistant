@@ -5,16 +5,23 @@ Authentication routes.
 
 Endpoints
 ---------
-POST /auth/login   — email + password → JWT access token
+POST /auth/login            — email + password → JWT access token
+GET  /auth/google/login     — Redirect user to Google OAuth authorization page
+GET  /auth/google/callback  — Exchange Google code, resolve user, return JWT
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import os
+from authlib.integrations.base_client.errors import OAuthError
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.database.models import UserStatus
 from app.database.queries import get_user_by_email
+from app.services import auth_service
+from app.services.auth_service import InactiveUserError, OAuthAccountConflictError
+from app.utils.oauth import oauth, GOOGLE_REDIRECT_URI
 from app.utils.security import create_access_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -33,6 +40,15 @@ class TokenResponse(BaseModel):
     """Successful login response."""
     access_token: str
     token_type: str = "bearer"
+
+
+class GoogleAuthResponse(BaseModel):
+    """Successful Google OAuth authentication response."""
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+    email: str
+    role: str
 
 
 # ---------------------------------------------------------------------------
@@ -90,3 +106,129 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     # Step 4 — issue token
     token = create_access_token(user_id=user.id, role=user.role)
     return TokenResponse(access_token=token, token_type="bearer")
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/google/login
+# ---------------------------------------------------------------------------
+
+@router.api_route(
+    "/google/login",
+    methods=["GET", "HEAD"],
+    summary="Google OAuth login",
+    description="Redirects user to Google OAuth 2.0 authorization screen.",
+)
+async def google_login(request: Request):
+    """
+    Initiate the Google OAuth/OIDC authorization-code flow.
+    Authlib generates a secure state parameter and saves it to the session cookie.
+    Uses explicit authorization endpoint without remote metadata discovery.
+    """
+    client_id = os.getenv("GOOGLE_CLIENT_ID") or oauth.google.client_id
+    if client_id:
+        oauth.google.client_id = client_id
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET") or oauth.google.client_secret
+    if client_secret:
+        oauth.google.client_secret = client_secret
+
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI") or GOOGLE_REDIRECT_URI or str(request.url_for("google_callback"))
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/google/callback
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/google/callback",
+    response_model=GoogleAuthResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Google OAuth callback",
+    description="Handles Google OAuth redirect, verifies token/claims, and issues application JWT.",
+)
+async def google_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    Google OAuth Callback Flow
+    --------------------------
+    1. Verify state and exchange code for Google tokens.
+    2. Extract identity claims (sub, email, name).
+    3. Delegate to auth_service to resolve, link, or provision local user.
+    4. Issue the application's existing JWT.
+    5. Return JWT token response.
+    """
+    # Step 1 — Exchange authorization code for tokens
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OAuth authentication failed: {exc.description or exc.error}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OAuth authorization error: {str(exc)}",
+        )
+
+    # Step 2 — Extract user identity claims
+    userinfo = token.get("userinfo")
+    if not userinfo and "id_token" in token:
+        try:
+            userinfo = await oauth.google.parse_id_token(request, token)
+        except Exception:
+            pass
+
+    if not userinfo and "access_token" in token:
+        try:
+            resp = await oauth.google.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                token=token,
+            )
+            userinfo = resp.json()
+        except Exception:
+            pass
+
+    if not userinfo:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to retrieve user identity from Google.",
+        )
+
+    google_id = userinfo.get("sub") or userinfo.get("id")
+    email = userinfo.get("email")
+
+    if not google_id or not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incomplete Google user profile (missing ID or email).",
+        )
+
+    # Step 3 — Resolve, link, or provision local user in the database
+    try:
+        user = auth_service.resolve_or_create_google_user(
+            db,
+            google_id=str(google_id),
+            email=email,
+            name=userinfo.get("name"),
+        )
+    except InactiveUserError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
+    except OAuthAccountConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+
+    # Step 4 — Issue our application's standard JWT
+    jwt_token = create_access_token(user_id=user.id, role=user.role)
+
+    return GoogleAuthResponse(
+        access_token=jwt_token,
+        token_type="bearer",
+        user_id=user.id,
+        email=user.email,
+        role=user.role,
+    )

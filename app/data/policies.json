@@ -1,0 +1,57 @@
+{
+  "company_name": "AI HR Assistant Tech Corp",
+  "version": "1.0",
+  "last_updated": "2024-01-01",
+  "policies": {
+    "leave_policy": {
+      "title": "Employee Leave Policy",
+      "summary": "Rules governing annual leave allocations, application procedures, and approvals.",
+      "annual_entitlements": {
+        "casual_leave": "12 days per calendar year (accrued at 1 day per month). Intended for personal matters and short leaves.",
+        "sick_leave": "10 days per calendar year. For personal medical needs. Medical certificate is mandatory for absences exceeding 2 consecutive days.",
+        "earned_leave": "15 days per calendar year. Available to employees with at least 6 months of continuous service. Can be carried forward up to 30 days.",
+        "unpaid_leave": "Granted only under exceptional circumstances subject to department head and HR approval."
+      },
+      "application_guidelines": "Leave requests must be applied through the HR portal. Planned leaves require at least 3 business days advance notice. Unplanned medical leave must be intimated within 24 hours.",
+      "approval_workflow": "Leaves are reviewed and approved by the immediate reporting manager and validated by Human Resources."
+    },
+    "working_hours": {
+      "title": "Working Hours Policy",
+      "summary": "Standard daily and weekly working schedules for company employees.",
+      "schedule": "Monday through Friday, 9:00 AM to 6:00 PM.",
+      "working_days_per_week": 5,
+      "standard_daily_hours": "8 working hours (480 minutes) per day, excluding 1 hour lunch break.",
+      "lunch_break": "1:00 PM to 2:00 PM daily.",
+      "weekend": "Saturday and Sunday are standard non-working weekly rest days."
+    },
+    "attendance_rules": {
+      "title": "Attendance & Punctuality Rules",
+      "summary": "Policies regarding clock-in, late entry marks, and unexcused absences.",
+      "start_time": "9:00 AM is the standard daily shift start time.",
+      "grace_period": "A 15-minute grace period is provided. Clocking in on or before 9:15 AM is considered on-time.",
+      "late_entry": "Clocking in after 9:15 AM is recorded as a Late Entry with late minutes tracked.",
+      "late_entry_penalty": "Accumulating 3 late entries within a single calendar month leads to a half-day leave or salary deduction.",
+      "early_departure": "Clocking out before 5:00 PM without supervisor authorization is logged as an unauthorized early exit.",
+      "absence": "Failure to report to work without prior notice or approved leave is marked as an unexcused absence (ABSENT) and subject to loss of pay."
+    },
+    "overtime_policy": {
+      "title": "Overtime Policy",
+      "summary": "Guidelines for pre-authorization and compensation for overtime work.",
+      "eligibility": "Non-exempt and technical staff working beyond 9 hours (540 minutes) on a regular working day or performing critical duties on weekends/holidays.",
+      "pre_approval": "All overtime must be pre-approved in writing or via HR ticket by the reporting manager.",
+      "compensation": "Overtime is compensated either through hourly overtime pay as part of monthly payroll or as compensatory off (comp-off) upon manager agreement.",
+      "overtime_records": "Overtime is calculated to the exact minute based on electronic clock-in and clock-out timestamps."
+    },
+    "holiday_rules": {
+      "title": "Public & National Holiday Rules",
+      "summary": "Company observed gazetted holidays and holiday work compensation.",
+      "annual_entitlement": "10 paid public holidays per calendar year according to the published company holiday calendar.",
+      "mandatory_national_holidays": [
+        "Republic Day (January 26)",
+        "Independence Day (August 15)",
+        "Mahatma Gandhi Jayanti (October 2)"
+      ],
+      "holiday_work": "Employees required to work on a gazetted national holiday receive either double the regular daily wage or compensatory time off."
+    }
+  }
+}
