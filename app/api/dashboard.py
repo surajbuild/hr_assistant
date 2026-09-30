@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.database.connection import get_db
 from app.database.models import User, UserRole
 from app.services import dashboard_service
-from app.utils.dependencies import get_current_user
+from app.utils.dependencies import get_current_user, require_role
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
@@ -103,10 +103,10 @@ def get_dashboard_summary(
         description="Optional date to compute daily metrics for (YYYY-MM-DD). Defaults to today or latest record.",
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("hr", "admin")),
 ):
     """
-    Returns full dashboard analytics.
-    Available to all authenticated users; respects current employee profile.
+    Returns full company-wide dashboard analytics.
+    Restricted to HR and Administrators (403 for Employee and Manager).
     """
     return dashboard_service.get_dashboard_summary(db=db, ref_date=ref_date)

@@ -25,12 +25,19 @@ export function App() {
     () => localStorage.getItem("hr_token")
   );
 
-  // Active view tab: "dashboard" or "chat"
-  const [activeTab, setActiveTab] = useState<"chat" | "dashboard">("dashboard");
+  // Active view tab: "dashboard" for HR/Admin, "chat" for Employee/Manager
+  const [activeTab, setActiveTab] = useState<"chat" | "dashboard">(() => {
+    const raw = localStorage.getItem("hr_token");
+    if (!raw) return "chat";
+    const payload = decodeTokenPayload(raw);
+    return ["hr", "admin"].includes(payload.role || "") ? "dashboard" : "chat";
+  });
 
   function handleLoginSuccess(newToken: string) {
     localStorage.setItem("hr_token", newToken);
     setToken(newToken);
+    const payload = decodeTokenPayload(newToken);
+    setActiveTab(["hr", "admin"].includes(payload.role || "") ? "dashboard" : "chat");
   }
 
   function handleLogout() {

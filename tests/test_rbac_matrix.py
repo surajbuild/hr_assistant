@@ -238,8 +238,8 @@ def run_all_rbac_tests():
     # =======================================================================
     print("\n--- 5. DASHBOARD MODULE RBAC ---")
     chk(client.get("/dashboard/summary").status_code == 401, "GET /dashboard/summary unauthenticated -> 401")
-    chk(client.get("/dashboard/summary", headers=emp_hdr).status_code == 200, "Employee can access dashboard -> 200")
-    chk(client.get("/dashboard/summary", headers=mgr_hdr).status_code == 200, "Manager can access dashboard -> 200")
+    chk(client.get("/dashboard/summary", headers=emp_hdr).status_code == 403, "Employee blocked from GET /dashboard/summary -> 403")
+    chk(client.get("/dashboard/summary", headers=mgr_hdr).status_code == 403, "Manager blocked from GET /dashboard/summary -> 403")
     chk(client.get("/dashboard/summary", headers=hr_hdr).status_code == 200, "HR can access dashboard -> 200")
     chk(client.get("/dashboard/summary", headers=admin_hdr).status_code == 200, "Admin can access dashboard -> 200")
 

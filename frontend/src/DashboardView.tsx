@@ -92,6 +92,10 @@ export function DashboardView({ token }: DashboardViewProps) {
         },
       });
 
+      if (res.status === 403) {
+        throw new Error("Access Restricted: Company-wide HR Analytics Dashboard is reserved for HR and Administrators.");
+      }
+
       if (!res.ok) {
         throw new Error(`Failed to load dashboard data (status ${res.status})`);
       }
