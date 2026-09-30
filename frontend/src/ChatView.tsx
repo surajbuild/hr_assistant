@@ -93,7 +93,7 @@ export function ChatView({ token, onLogout, showHeader = false }: ChatViewProps)
 
       if (res.status === 401) {
         // Token expired — log out cleanly
-        onLogout();
+        onLogout?.();
         return;
       }
 
