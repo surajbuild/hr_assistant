@@ -53,7 +53,27 @@ def check_rbac_access(
     if user_role in [UserRole.ADMIN.value, UserRole.HR.value]:
         return True, None
 
-    # If target is someone else or company-wide data:
+    # Manager: authorized for direct subordinates (Team data) for Attendance & Leaves, but NOT Salary
+    if user_role == UserRole.MANAGER.value:
+        subordinate_ids = (
+            {sub.id for sub in current_user.employee.subordinates}
+            if current_user.employee and current_user.employee.subordinates
+            else set()
+        )
+        if target_employee_id is not None and target_employee_id in subordinate_ids:
+            if intent in ["ATTENDANCE", "LEAVE", "EMPLOYEE"]:
+                return True, None
+            if intent == "SALARY":
+                return False, "Access denied: You are not authorized to view another employee's salary details."
+        else:
+            if intent == "SALARY":
+                return False, "Access denied: You are not authorized to view another employee's salary details."
+            if intent == "LEAVE":
+                return False, "Access denied: You are not authorized to view another employee's leave records."
+            if intent == "ATTENDANCE":
+                return False, "Access denied: You are not authorized to view another employee's attendance records."
+
+    # Employee: cannot view other employees' salary, leaves, or attendance
     if intent == "SALARY":
         return False, "Access denied: You are not authorized to view another employee's salary details."
 
@@ -64,7 +84,7 @@ def check_rbac_access(
         return False, "Access denied: You are not authorized to view another employee's attendance records."
 
     if intent == "EMPLOYEE":
-        # Managers and Employees querying other employees' profiles
+        # General employee profile lookups
         return True, None
 
     return True, None

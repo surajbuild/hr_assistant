@@ -157,12 +157,12 @@ def get_my_leaves(
     response_model=LeaveResponse,
     status_code=status.HTTP_200_OK,
     summary="Approve or Reject Leave",
-    description="Allows HR or Managers to approve or reject a pending leave request.",
+    description="Allows HR, Managers, or Admins to approve or reject a pending leave request.",
 )
 def update_leave_status(
     leave_id: int,
     body: LeaveStatusUpdate,
-    current_user: User = Depends(require_role("hr", "manager")),
+    current_user: User = Depends(require_role("hr", "manager", "admin")),
     db: Session = Depends(get_db),
 ):
     """
