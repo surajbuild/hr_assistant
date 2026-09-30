@@ -41,6 +41,13 @@ const server = serve({
       return proxyTo(req, `${BACKEND}/chat`);
     },
 
+    // ── Proxy: /dashboard/* → FastAPI /dashboard/* ───────────────────────
+    "/dashboard/:path*": async (req) => {
+      const url = new URL(req.url);
+      const target = `${BACKEND}${url.pathname}${url.search}`;
+      return proxyTo(req, target);
+    },
+
     // ── Serve React SPA for every other route ────────────────────────────
     "/*": index,
   },

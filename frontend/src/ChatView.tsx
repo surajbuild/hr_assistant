@@ -13,7 +13,8 @@ interface Message {
 
 interface ChatViewProps {
   token: string;
-  onLogout: () => void;
+  onLogout?: () => void;
+  showHeader?: boolean;
 }
 
 // ── JWT decode (no library — base64 decode the payload) ───────────────────────
@@ -47,7 +48,7 @@ function intentBadgeClass(intent: string) {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function ChatView({ token, onLogout }: ChatViewProps) {
+export function ChatView({ token, onLogout, showHeader = false }: ChatViewProps) {
   const { role } = decodeTokenPayload(token);
 
   const [messages, setMessages] = useState<Message[]>([
@@ -131,19 +132,23 @@ export function ChatView({ token, onLogout }: ChatViewProps) {
   }
 
   return (
-    <div className="flex flex-col h-screen max-w-2xl mx-auto">
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <header className="flex items-center justify-between px-4 py-3 border-b bg-card shrink-0">
-        <div className="flex flex-col">
-          <span className="font-semibold text-sm">AI HR Assistant</span>
-          {role && (
-            <span className="text-xs text-muted-foreground capitalize">{role}</span>
+    <div className="flex flex-col h-full max-w-3xl w-full mx-auto">
+      {/* ── Optional Header ─────────────────────────────────────────────────── */}
+      {showHeader && (
+        <header className="flex items-center justify-between px-4 py-3 border-b bg-card shrink-0">
+          <div className="flex flex-col">
+            <span className="font-semibold text-sm">AI HR Assistant</span>
+            {role && (
+              <span className="text-xs text-muted-foreground capitalize">{role}</span>
+            )}
+          </div>
+          {onLogout && (
+            <Button variant="outline" size="sm" onClick={onLogout}>
+              Logout
+            </Button>
           )}
-        </div>
-        <Button variant="outline" size="sm" onClick={onLogout}>
-          Logout
-        </Button>
-      </header>
+        </header>
+      )}
 
       {/* ── Message area ────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">

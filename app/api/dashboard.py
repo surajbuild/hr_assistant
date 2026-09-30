@@ -1,0 +1,112 @@
+"""
+app/api/dashboard.py
+--------------------
+FastAPI endpoints for HR Dashboard analytics (PRD Section 21).
+
+Provides:
+- GET /dashboard/summary: Real-time high-level metrics, department attendance,
+  overtime/late leaderboards, and leave distribution.
+"""
+
+from datetime import date
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+from app.database.models import User, UserRole
+from app.services import dashboard_service
+from app.utils.dependencies import get_current_user
+
+
+router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class KpiMetrics(BaseModel):
+    total_employees: int
+    present_today: int
+    absent_today: int
+    on_leave_today: int
+    late_today: int
+    total_overtime_hours: float
+
+
+class DepartmentAttendanceItem(BaseModel):
+    department: str
+    total_employees: int
+    present: int
+    absent: int
+    percentage: float
+
+
+class OvertimeLeaderItem(BaseModel):
+    name: str
+    department: str
+    overtime_hours: float
+
+
+class LateLeaderItem(BaseModel):
+    name: str
+    department: str
+    late_count: int
+    total_late_minutes: int
+
+
+class LeaveBreakdownItem(BaseModel):
+    type: str
+    count: int
+
+
+class RecentLeaveItem(BaseModel):
+    id: int
+    employee_name: str
+    department: str
+    leave_type: str
+    from_date: str
+    to_date: str
+    status: str
+    reason: str
+
+
+class DashboardSummaryResponse(BaseModel):
+    reference_date: str
+    is_fallback_date: bool
+    month: str
+    kpis: KpiMetrics
+    department_attendance: List[DepartmentAttendanceItem]
+    overtime_leaders: List[OvertimeLeaderItem]
+    late_leaders: List[LateLeaderItem]
+    leave_breakdown: List[LeaveBreakdownItem]
+    recent_leaves: List[RecentLeaveItem]
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/summary",
+    response_model=DashboardSummaryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get HR Dashboard Summary",
+    description="Retrieve company-wide attendance, leave, overtime, and department metrics for the dashboard.",
+)
+def get_dashboard_summary(
+    ref_date: Optional[date] = Query(
+        None,
+        alias="date",
+        description="Optional date to compute daily metrics for (YYYY-MM-DD). Defaults to today or latest record.",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns full dashboard analytics.
+    Available to all authenticated users; respects current employee profile.
+    """
+    return dashboard_service.get_dashboard_summary(db=db, ref_date=ref_date)
