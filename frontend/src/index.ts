@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import index from "./index.html";
+import axios from "axios";
 
 const server = serve({
   routes: {
