@@ -1,33 +1,48 @@
 import { serve } from "bun";
 import index from "./index.html";
-import axios from "axios";
+
+const BACKEND = process.env.BACKEND_URL || "http://localhost:8000";
+
+/**
+ * Forward an incoming Bun request to the FastAPI backend.
+ * Preserves method, body, Content-Type, and Authorization headers.
+ */
+async function proxyTo(req: Request, backendUrl: string): Promise<Response> {
+  const headers: Record<string, string> = {};
+
+  const contentType = req.headers.get("content-type");
+  if (contentType) headers["content-type"] = contentType;
+
+  const authorization = req.headers.get("authorization");
+  if (authorization) headers["authorization"] = authorization;
+
+  return fetch(backendUrl, {
+    method: req.method,
+    headers,
+    // Only forward body for methods that can carry one
+    body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,
+    // Required so Bun streams the body correctly
+    duplex: "half",
+  } as RequestInit);
+}
 
 const server = serve({
   routes: {
-    // Serve index.html for all unmatched routes.
+    // ── Proxy: /auth/* → FastAPI /auth/* ────────────────────────────────────
+    "/auth/:path*": async (req) => {
+      const url = new URL(req.url);
+      // Reconstruct the full path including any query string
+      const target = `${BACKEND}${url.pathname}${url.search}`;
+      return proxyTo(req, target);
+    },
+
+    // ── Proxy: /chat → FastAPI /chat ─────────────────────────────────────
+    "/chat": async (req) => {
+      return proxyTo(req, `${BACKEND}/chat`);
+    },
+
+    // ── Serve React SPA for every other route ────────────────────────────
     "/*": index,
-
-    "/api/hello": {
-      async GET(req) {
-        return Response.json({
-          message: "Hello, world!",
-          method: "GET",
-        });
-      },
-      async PUT(req) {
-        return Response.json({
-          message: "Hello, world!",
-          method: "PUT",
-        });
-      },
-    },
-
-    "/api/hello/:name": async req => {
-      const name = req.params.name;
-      return Response.json({
-        message: `Hello, ${name}!`,
-      });
-    },
   },
 
   development: process.env.NODE_ENV !== "production" && {
@@ -40,3 +55,4 @@ const server = serve({
 });
 
 console.log(`🚀 Server running at ${server.url}`);
+console.log(`🔀 Proxying /auth/* and /chat → ${BACKEND}`);
