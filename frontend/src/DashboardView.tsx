@@ -13,7 +13,12 @@ import {
   Calendar,
   Building2,
   Award,
+  FileSpreadsheet,
+  Download,
+  Loader2,
+  CheckCircle2,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 
 interface KpiMetrics {
   total_employees: number;
@@ -109,6 +114,66 @@ export function DashboardView({ token }: DashboardViewProps) {
     }
   }
 
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [downloadingType, setDownloadingType] = useState<"attendance" | "overtime" | null>(null);
+  const [reportMessage, setReportMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
+
+  async function handleDownloadReport(reportType: "attendance" | "overtime") {
+    setDownloadingType(reportType);
+    setReportMessage(null);
+    try {
+      const params = new URLSearchParams();
+      if (dateFrom) params.append("date_from", dateFrom);
+      if (dateTo) params.append("date_to", dateTo);
+      const query = params.toString() ? `?${params.toString()}` : "";
+
+      const res = await fetch(`/reports/${reportType}${query}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 403) {
+          throw new Error("Access Denied: Only HR and Admin roles are authorized to export reports.");
+        }
+        throw new Error(`Report export failed with status ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = `${reportType}_report.xlsx`;
+      if (disposition) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          filename = match[1];
+        }
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      setReportMessage({
+        type: "success",
+        text: `Downloaded ${filename} successfully.`,
+      });
+    } catch (err: any) {
+      setReportMessage({
+        type: "error",
+        text: err.message || "Failed to download Excel report.",
+      });
+    } finally {
+      setDownloadingType(null);
+    }
+  }
+
   useEffect(() => {
     fetchDashboard();
   }, [token]);
@@ -165,6 +230,94 @@ export function DashboardView({ token }: DashboardViewProps) {
           Refresh Stats
         </Button>
       </div>
+
+      {/* ── Reports Export Card ── */}
+      <Card className="border shadow-xs bg-card">
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-emerald-500/10 text-emerald-600 rounded-lg shrink-0">
+                <FileSpreadsheet className="size-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Export Excel Reports</h3>
+                <p className="text-xs text-muted-foreground">
+                  Generate and download real-time HR attendance and overtime spreadsheets (.xlsx).
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground whitespace-nowrap">From:</span>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-8 text-xs w-36 bg-background"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground whitespace-nowrap">To:</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-8 text-xs w-36 bg-background"
+                />
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleDownloadReport("attendance")}
+                disabled={downloadingType !== null}
+                className="gap-2 h-8 text-xs font-medium"
+              >
+                {downloadingType === "attendance" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5 text-emerald-600" />
+                )}
+                Attendance Report
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleDownloadReport("overtime")}
+                disabled={downloadingType !== null}
+                className="gap-2 h-8 text-xs font-medium"
+              >
+                {downloadingType === "overtime" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5 text-blue-600" />
+                )}
+                Overtime Report
+              </Button>
+            </div>
+          </div>
+
+          {reportMessage && (
+            <div
+              className={`mt-3 text-xs flex items-center gap-1.5 rounded-md px-3 py-1.5 ${
+                reportMessage.type === "success"
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                  : "bg-destructive/10 text-destructive border border-destructive/20"
+              }`}
+            >
+              {reportMessage.type === "success" ? (
+                <CheckCircle2 className="size-3.5 shrink-0" />
+              ) : (
+                <AlertCircle className="size-3.5 shrink-0" />
+              )}
+              <span>{reportMessage.text}</span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── Top Row: KPI Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">

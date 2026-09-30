@@ -48,6 +48,13 @@ const server = serve({
       return proxyTo(req, target);
     },
 
+    // ── Proxy: /reports/* → FastAPI /reports/* ───────────────────────────
+    "/reports/:path*": async (req) => {
+      const url = new URL(req.url);
+      const target = `${BACKEND}${url.pathname}${url.search}`;
+      return proxyTo(req, target);
+    },
+
     // ── Serve React SPA for every other route ────────────────────────────
     "/*": index,
   },
