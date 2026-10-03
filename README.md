@@ -1,4 +1,4 @@
-# AI HR Assistant — Backend
+# AI HR Assistant — Backend.
 
 FastAPI backend for an AI-powered HR Assistant managing employees, attendance, leaves, payroll, and authentication.
 
