@@ -6,7 +6,9 @@ Salary management routes.
 Endpoints
 ---------
 GET /salary/me             — Get salary records for the authenticated employee.
+GET /salary                — Payroll sheet for one month with employee names (HR / Admin).
 GET /salary/summary        — Get aggregated salary summary statistics (HR / Admin).
+POST /salary/generate      — Payroll engine: compute/update a month's salary rows (HR / Admin).
 GET /salary/{employee_id}  — Get salary records for a specific employee (HR / Admin).
 """
 
@@ -14,13 +16,13 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.database.models import User
 from app.services import salary_service
-from app.services.salary_service import EmployeeNotFoundError, InvalidSalaryFilterError
+from app.services.salary_service import EmployeeNotFoundError, InvalidSalaryFilterError, PayrollPeriodError
 from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/salary", tags=["Salary"])
@@ -128,6 +130,126 @@ def get_salary_summary(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /salary  (payroll sheet)
+# ---------------------------------------------------------------------------
+
+class PayrollItem(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: str
+    employee_code: str
+    department: str
+    designation: str
+    month: int
+    year: int
+    gross_salary: float
+    pf: float
+    deductions: float
+    overtime_amount: float
+    net_salary: float
+    paid_at: Optional[datetime] = None
+
+
+class PayrollResponse(BaseModel):
+    month: Optional[int] = None
+    year: Optional[int] = None
+    items: List[PayrollItem]
+
+
+@router.get(
+    "",
+    response_model=PayrollResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Payroll Sheet",
+    description="Salary records for one month (default: latest month with data). HR / Admin only.",
+)
+def get_payroll(
+    month: Optional[int] = Query(None, description="Month (1-12)"),
+    year: Optional[int] = Query(None, description="Year"),
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return salary_service.list_payroll(db, month=month, year=year)
+    except InvalidSalaryFilterError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# POST /salary/generate  (payroll engine)
+# ---------------------------------------------------------------------------
+
+class PayrollGenerateRequest(BaseModel):
+    month: int = Field(..., ge=1, le=12)
+    year: int = Field(..., ge=2000, le=2100)
+    employee_ids: Optional[List[int]] = Field(
+        None, description="Limit generation to these employees (default: all active employees)."
+    )
+
+
+class PayrollLineItem(BaseModel):
+    employee_id: int
+    employee_name: str
+    employee_code: str
+    department: str
+    gross_salary: float
+    working_days: int
+    paid_days: float
+    absent_days: int
+    half_days: int
+    unpaid_leave_days: int
+    lop_days: float
+    lop_deduction: float
+    pf: float
+    overtime_minutes: int
+    overtime_amount: float
+    deductions: float
+    net_salary: float
+    action: str
+
+
+class PayrollSkipItem(BaseModel):
+    employee_id: int
+    employee_name: str
+    reason: str
+
+
+class PayrollGenerateResponse(BaseModel):
+    month: int
+    year: int
+    working_days: int
+    provisional: bool
+    created: int
+    updated: int
+    skipped: List[PayrollSkipItem]
+    items: List[PayrollLineItem]
+
+
+@router.post(
+    "/generate",
+    response_model=PayrollGenerateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Generate Payroll",
+    description=(
+        "Compute salary rows for a month from each employee's monthly gross salary, attendance and leave "
+        "(LOP for absences / half days / unpaid leave, PF, overtime pay). Idempotent: unpaid rows are updated, "
+        "paid rows are locked. HR / Admin only."
+    ),
+)
+def generate_payroll(
+    payload: PayrollGenerateRequest,
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return salary_service.generate_payroll(
+            db, month=payload.month, year=payload.year, employee_ids=payload.employee_ids
+        )
+    except PayrollPeriodError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
