@@ -24,6 +24,8 @@ def cleanup():
         db.delete(u)
     db.commit()
         
+    # Clear the self-referential manager link first so the bulk delete satisfies the FK
+    db.query(Employee).filter(Employee.employee_code.in_(codes)).update({Employee.manager_id: None})
     db.query(Employee).filter(Employee.employee_code.in_(codes)).delete()
     db.commit()
 
@@ -56,8 +58,11 @@ try:
     cleanup()
 
     _, hr_u, hr_t = make_test_user("patch.hr@hr.dev", "hr", "P-HR")
-    _, mgr_u, mgr_t = make_test_user("patch.mgr@hr.dev", "manager", "P-MGR")
+    mgr_emp, mgr_u, mgr_t = make_test_user("patch.mgr@hr.dev", "manager", "P-MGR")
     emp, emp_u, emp_t = make_test_user("patch.emp@hr.dev", "employee", "P-EMP")
+    # Managers can only approve/reject leaves of their direct reports (D-010)
+    emp.manager_id = mgr_emp.id
+    db.commit()
 
     l1 = Leave(employee_id=emp.id, leave_type="sick", from_date=date(2024, 1, 1), to_date=date(2024, 1, 2), status="pending")
     l2 = Leave(employee_id=emp.id, leave_type="casual", from_date=date(2024, 2, 1), to_date=date(2024, 2, 2), status="pending")
