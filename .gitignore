@@ -6,3 +6,8 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 Project-Suraj.docx
+# Uploaded HR documents (RAG source files) — never commit
+documents/
+.pytest_cache/
+# Browser QA screenshots (scripts/ui_qa.py default output)
+qa_shots/
