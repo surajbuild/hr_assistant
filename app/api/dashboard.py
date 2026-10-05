@@ -5,7 +5,8 @@ FastAPI endpoints for HR Dashboard analytics (PRD Section 21).
 
 Provides:
 - GET /dashboard/summary: Real-time high-level metrics, department attendance,
-  overtime/late leaderboards, and leave distribution.
+  overtime/late leaderboards, leave distribution and monthly attendance trend (HR / Admin).
+- GET /dashboard/me: Personal overview for any role (+ team snapshot for managers).
 """
 
 from datetime import date
@@ -73,6 +74,17 @@ class RecentLeaveItem(BaseModel):
     reason: str
 
 
+class MonthlyAttendanceItem(BaseModel):
+    month: str
+    label: str
+    present: int
+    absent: int
+    late: int
+    half_day: int
+    leave: int
+    attendance_rate: float
+
+
 class DashboardSummaryResponse(BaseModel):
     reference_date: str
     is_fallback_date: bool
@@ -83,6 +95,7 @@ class DashboardSummaryResponse(BaseModel):
     late_leaders: List[LateLeaderItem]
     leave_breakdown: List[LeaveBreakdownItem]
     recent_leaves: List[RecentLeaveItem]
+    monthly_attendance: List[MonthlyAttendanceItem] = []
 
 
 # ---------------------------------------------------------------------------
@@ -110,3 +123,20 @@ def get_dashboard_summary(
     Restricted to HR and Administrators (403 for Employee and Manager).
     """
     return dashboard_service.get_dashboard_summary(db=db, ref_date=ref_date)
+
+
+# ---------------------------------------------------------------------------
+# GET /dashboard/me
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/me",
+    status_code=status.HTTP_200_OK,
+    summary="Get My Dashboard",
+    description="Personal overview: today's attendance, month stats, leave balance, latest payslip; managers also get a team snapshot.",
+)
+def get_my_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    return dashboard_service.get_my_dashboard(db=db, current_user=current_user)
