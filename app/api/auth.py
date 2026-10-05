@@ -6,22 +6,31 @@ Authentication routes.
 Endpoints
 ---------
 POST /auth/login            — email + password → JWT access token
+GET  /auth/me               — Current user + linked employee profile
 GET  /auth/google/login     — Redirect user to Google OAuth authorization page
+                              (?next=frontend makes the callback redirect to the SPA)
 GET  /auth/google/callback  — Exchange Google code, resolve user, return JWT
+                              (JSON by default; redirect to FRONTEND_URL/login#token=... when requested)
 """
 
 import os
+from datetime import date
+from typing import Optional
+from urllib.parse import quote
+
 from authlib.integrations.base_client.errors import OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import UserStatus
+from app.database.models import User, UserStatus
 from app.database.queries import get_user_by_email
 from app.services import auth_service
 from app.services.auth_service import InactiveUserError, OAuthAccountConflictError
 from app.utils.oauth import oauth, GOOGLE_REDIRECT_URI
+from app.utils.dependencies import get_current_user
 from app.utils.security import create_access_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -49,6 +58,27 @@ class GoogleAuthResponse(BaseModel):
     user_id: int
     email: str
     role: str
+
+
+class MeEmployee(BaseModel):
+    id: int
+    employee_code: str
+    name: str
+    department: str
+    designation: str
+    joining_date: date
+    status: str
+    manager_id: Optional[int] = None
+    manager_name: Optional[str] = None
+
+
+class MeResponse(BaseModel):
+    """Identity of the authenticated user (used by the frontend on load)."""
+    user_id: int
+    email: str
+    role: str
+    status: str
+    employee: Optional[MeEmployee] = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +139,41 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# GET /auth/me
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/me",
+    response_model=MeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Current user",
+    description="Return the authenticated user's identity, role and linked employee profile.",
+)
+def me(current_user: User = Depends(get_current_user)):
+    emp = current_user.employee
+    employee = None
+    if emp:
+        employee = MeEmployee(
+            id=emp.id,
+            employee_code=emp.employee_code,
+            name=emp.name,
+            department=emp.department,
+            designation=emp.designation,
+            joining_date=emp.joining_date,
+            status=emp.status,
+            manager_id=emp.manager_id,
+            manager_name=emp.manager.name if emp.manager else None,
+        )
+    return MeResponse(
+        user_id=current_user.id,
+        email=current_user.email,
+        role=current_user.role,
+        status=current_user.status,
+        employee=employee,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /auth/google/login
 # ---------------------------------------------------------------------------
 
@@ -132,6 +197,11 @@ async def google_login(request: Request):
         oauth.google.client_secret = client_secret
 
     redirect_uri = os.getenv("GOOGLE_REDIRECT_URI") or GOOGLE_REDIRECT_URI or str(request.url_for("google_callback"))
+    # Remember whether the SPA wants the token handed back via redirect
+    if request.query_params.get("next") == "frontend":
+        request.session["oauth_next"] = "frontend"
+    else:
+        request.session.pop("oauth_next", None)
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -224,6 +294,11 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 
     # Step 4 — Issue our application's standard JWT
     jwt_token = create_access_token(user_id=user.id, role=user.role)
+
+    # Step 5 — Hand the token to the SPA if the login was started from it
+    if request.session.pop("oauth_next", None) == "frontend":
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+        return RedirectResponse(f"{frontend_url}/login#token={quote(jwt_token)}", status_code=302)
 
     return GoogleAuthResponse(
         access_token=jwt_token,
