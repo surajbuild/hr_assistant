@@ -10,6 +10,9 @@ from app.api.salary import router as salary_router
 from app.api.chat import router as chat_router
 from app.api.dashboard import router as dashboard_router
 from app.api.reports import router as reports_router
+from app.api.departments import router as departments_router
+from app.api.documents import router as documents_router
+from app.api.users import router as users_router
 
 app = FastAPI(
     title="AI HR Assistant",
@@ -30,6 +33,9 @@ app.include_router(salary_router)
 app.include_router(chat_router)
 app.include_router(dashboard_router)
 app.include_router(reports_router)
+app.include_router(departments_router)
+app.include_router(documents_router)
+app.include_router(users_router)
 
 
 @app.get("/", tags=["Health"])
