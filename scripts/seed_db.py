@@ -35,6 +35,8 @@ from app.database.models import (
     Attendance,
     AttendanceStatus,
     ChatLog,
+    Document,
+    DocumentChunk,
     Employee,
     EmployeeStatus,
     Leave,
@@ -132,6 +134,16 @@ def clear_demo_data(
         # Delete dependent chat_logs
         if demo_user_ids:
             db.query(ChatLog).filter(ChatLog.user_id.in_(demo_user_ids)).delete(synchronize_session=False)
+
+        # Delete documents uploaded by demo users (documents.uploaded_by FK) and their RAG chunks.
+        # Stored files under documents/ are left on disk; re-upload them after reseeding.
+        if demo_user_ids:
+            doc_ids = [d.id for d in db.query(Document.id).filter(Document.uploaded_by.in_(demo_user_ids)).all()]
+            if doc_ids:
+                db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+                deleted_counts["documents"] = (
+                    db.query(Document).filter(Document.id.in_(doc_ids)).delete(synchronize_session=False)
+                )
 
         # Delete users
         if demo_user_ids or demo_emp_ids:
@@ -291,6 +303,16 @@ def seed_database(
             )
         )
     db.add_all(salary_records)
+    db.commit()
+
+    # Salary structure for the payroll engine (D-021): latest seeded gross per employee
+    latest_gross = {}
+    for rec in sorted(salary_records, key=lambda r: (r.year, r.month)):
+        latest_gross[rec.employee_id] = rec.gross_salary
+    for emp_id, gross in latest_gross.items():
+        emp = db.query(Employee).filter(Employee.id == emp_id).first()
+        if emp is not None and emp.monthly_gross_salary is None:
+            emp.monthly_gross_salary = gross
     db.commit()
 
     return {
