@@ -7,18 +7,20 @@ Contains reusable Python functions for:
 - Retrieving attendance records (by employee, with existence verification)
 - Creating attendance records (with existence and duplicate-date validation)
 - Aggregating attendance statistics / summaries (with date filtering)
+- Self-service check-in / check-out with late & overtime calculation
+- Company daily attendance view and filtered record listing (scoped by role)
 
 This module is independent of FastAPI HTTP concerns (no Request, HTTPException,
 or status codes) so that it can be invoked by both API routers and AI/tool agents.
 """
 
-from datetime import date, time
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, time
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from app.database.models import Attendance, AttendanceStatus, Employee
+from app.database.models import Attendance, AttendanceStatus, Employee, EmployeeStatus
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,11 @@ class DuplicateAttendanceError(AttendanceServiceError):
 
 class InvalidDateRangeError(AttendanceServiceError):
     """Raised when start_date is later than end_date."""
+    pass
+
+
+class CheckInError(AttendanceServiceError):
+    """Raised when a check-in / check-out action is not valid in the current state."""
     pass
 
 
@@ -231,15 +238,263 @@ def get_attendance_summary(
     result = query.one()
 
     return {
-        "total_days": result.total_days or 0,
-        "present_days": result.present_days or 0,
-        "absent_days": result.absent_days or 0,
-        "half_day_days": result.half_day_days or 0,
-        "leave_days": result.leave_days or 0,
-        "holiday_days": result.holiday_days or 0,
-        "weekend_days": result.weekend_days or 0,
-        "late_days": result.late_days or 0,
-        "overtime_days": result.overtime_days or 0,
-        "total_working_minutes": result.total_working_minutes or 0,
-        "total_overtime_minutes": result.total_overtime_minutes or 0,
+        "total_days": int(result.total_days or 0),
+        "present_days": int(result.present_days or 0),
+        "absent_days": int(result.absent_days or 0),
+        "half_day_days": int(result.half_day_days or 0),
+        "leave_days": int(result.leave_days or 0),
+        "holiday_days": int(result.holiday_days or 0),
+        "weekend_days": int(result.weekend_days or 0),
+        "late_days": int(result.late_days or 0),
+        "overtime_days": int(result.overtime_days or 0),
+        "total_working_minutes": int(result.total_working_minutes or 0),
+        "total_overtime_minutes": int(result.total_overtime_minutes or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Company Attendance Rules (mirrors app/data/policies.json — see D-007)
+# ---------------------------------------------------------------------------
+
+SHIFT_START = time(9, 0)
+GRACE_MINUTES = 15
+LUNCH_BREAK_MINUTES = 60
+STANDARD_WORKING_MINUTES = 480   # 8h of work (9:00–18:00 minus 1h lunch)
+HALF_DAY_THRESHOLD_MINUTES = 240  # fewer than 4h worked → half day
+
+# Fixed-date mandatory national holidays (app/data/policies.json → holiday_rules). Paid, non-working days.
+COMPANY_HOLIDAYS = {(1, 26): "Republic Day", (8, 15): "Independence Day", (10, 2): "Gandhi Jayanti"}
+
+
+def is_working_day(day: date) -> bool:
+    """Mon–Fri and not a company holiday."""
+    return day.weekday() < 5 and (day.month, day.day) not in COMPANY_HOLIDAYS
+
+
+def working_days_between(start: date, end: date) -> List[date]:
+    """All working days in [start, end]."""
+    days = []
+    current = start
+    while current <= end:
+        if is_working_day(current):
+            days.append(current)
+        current = date.fromordinal(current.toordinal() + 1)
+    return days
+
+
+def _minutes_between(start: time, end: time) -> int:
+    return int(
+        (datetime.combine(date.min, end) - datetime.combine(date.min, start)).total_seconds() // 60
+    )
+
+
+def calculate_late_minutes(in_time: time) -> int:
+    """
+    Minutes late relative to the 9:00 shift start.
+    Arrivals within the 15-minute grace period count as on time (0).
+    """
+    late = _minutes_between(SHIFT_START, in_time)
+    return late if late > GRACE_MINUTES else 0
+
+
+def calculate_day_metrics(in_time: time, out_time: time) -> Dict[str, int]:
+    """
+    Python calculation engine for a single day (PRD §20).
+
+    working_minutes  = (out - in) - lunch break (lunch only deducted for spans > 5h)
+    overtime_minutes = working minutes beyond the 480-minute standard day
+    late_minutes     = minutes after 9:00 when beyond the grace period
+    """
+    span = max(0, _minutes_between(in_time, out_time))
+    working = span - LUNCH_BREAK_MINUTES if span > 300 else span
+    working = max(0, working)
+    return {
+        "working_minutes": working,
+        "overtime_minutes": max(0, working - STANDARD_WORKING_MINUTES),
+        "late_minutes": calculate_late_minutes(in_time),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Self-service Check-in / Check-out
+# ---------------------------------------------------------------------------
+
+def check_in(db: Session, employee_id: int, now: Optional[datetime] = None) -> Attendance:
+    """
+    Record today's check-in for the employee.
+
+    Raises:
+        CheckInError: if a record for today already exists.
+    """
+    now = now or datetime.now()
+    today = now.date()
+    if get_attendance_by_date(db, employee_id=employee_id, attendance_date=today):
+        raise CheckInError("You have already checked in today.")
+    in_time = now.time().replace(microsecond=0)
+    record = Attendance(
+        employee_id=employee_id,
+        attendance_date=today,
+        in_time=in_time,
+        out_time=None,
+        working_minutes=0,
+        status=AttendanceStatus.PRESENT.value,
+        late_minutes=calculate_late_minutes(in_time),
+        overtime_minutes=0,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def check_out(db: Session, employee_id: int, now: Optional[datetime] = None) -> Attendance:
+    """
+    Record today's check-out and compute working / overtime minutes.
+
+    Raises:
+        CheckInError: if not checked in today, or already checked out.
+    """
+    now = now or datetime.now()
+    record = get_attendance_by_date(db, employee_id=employee_id, attendance_date=now.date())
+    if not record or not record.in_time:
+        raise CheckInError("You have not checked in today.")
+    if record.out_time:
+        raise CheckInError("You have already checked out today.")
+    out_time = now.time().replace(microsecond=0)
+    metrics = calculate_day_metrics(record.in_time, out_time)
+    record.out_time = out_time
+    record.working_minutes = metrics["working_minutes"]
+    record.overtime_minutes = metrics["overtime_minutes"]
+    record.late_minutes = metrics["late_minutes"]
+    record.status = (
+        AttendanceStatus.HALF_DAY.value
+        if metrics["working_minutes"] < HALF_DAY_THRESHOLD_MINUTES
+        else AttendanceStatus.PRESENT.value
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Company / Team Views
+# ---------------------------------------------------------------------------
+
+def get_latest_attendance_date(db: Session) -> Optional[date]:
+    """Most recent date that has any attendance record (demo data is historical)."""
+    row = db.query(func.max(Attendance.attendance_date)).scalar()
+    return row
+
+
+def get_daily_attendance(
+    db: Session,
+    *,
+    target_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Every in-scope active employee with their record for `target_date`
+    (status `not_marked` when no record exists).
+
+    When `target_date` is None, today is used if it has data, otherwise the
+    latest date with attendance (is_fallback_date = True).
+    """
+    is_fallback = False
+    if target_date is None:
+        today = date.today()
+        has_today = db.query(Attendance.id).filter(Attendance.attendance_date == today).first()
+        if has_today:
+            target_date = today
+        else:
+            latest = get_latest_attendance_date(db)
+            target_date = latest or today
+            is_fallback = latest is not None
+
+    emp_query = db.query(Employee).filter(Employee.status == EmployeeStatus.ACTIVE.value)
+    if scope_ids is not None:
+        emp_query = emp_query.filter(Employee.id.in_(scope_ids or {-1}))
+    employees = emp_query.order_by(Employee.name.asc()).all()
+
+    records = {
+        r.employee_id: r
+        for r in db.query(Attendance).filter(Attendance.attendance_date == target_date).all()
+    }
+
+    counts = {
+        "present": 0, "absent": 0, "late": 0, "half_day": 0, "leave": 0,
+        "holiday": 0, "weekend": 0, "not_marked": 0, "total": len(employees),
+    }
+    rows = []
+    for emp in employees:
+        rec = records.get(emp.id)
+        row_status = rec.status if rec else "not_marked"
+        if row_status in counts:
+            counts[row_status] += 1
+        if rec and (rec.late_minutes or 0) > 0:
+            counts["late"] += 1
+        rows.append({
+            "employee_id": emp.id,
+            "employee_code": emp.employee_code,
+            "name": emp.name,
+            "department": emp.department,
+            "designation": emp.designation,
+            "status": row_status,
+            "in_time": rec.in_time if rec else None,
+            "out_time": rec.out_time if rec else None,
+            "working_minutes": rec.working_minutes if rec else None,
+            "late_minutes": rec.late_minutes if rec else 0,
+            "overtime_minutes": rec.overtime_minutes if rec else 0,
+        })
+
+    return {
+        "date": target_date,
+        "is_fallback_date": is_fallback,
+        "counts": counts,
+        "rows": rows,
+    }
+
+
+def list_attendance_records(
+    db: Session,
+    *,
+    scope_ids: Optional[Set[int]] = None,
+    employee_id: Optional[int] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    status: Optional[str] = None,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    """Filtered attendance records joined with employee name/department."""
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    query = db.query(Attendance, Employee).join(Employee, Employee.id == Attendance.employee_id)
+    if scope_ids is not None:
+        query = query.filter(Attendance.employee_id.in_(scope_ids or {-1}))
+    if employee_id is not None:
+        query = query.filter(Attendance.employee_id == employee_id)
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+    if status:
+        query = query.filter(Attendance.status == status)
+
+    rows = query.order_by(Attendance.attendance_date.desc(), Employee.name.asc()).limit(limit).all()
+    return [
+        {
+            "id": att.id,
+            "employee_id": emp.id,
+            "employee_code": emp.employee_code,
+            "employee_name": emp.name,
+            "department": emp.department,
+            "attendance_date": att.attendance_date,
+            "in_time": att.in_time,
+            "out_time": att.out_time,
+            "working_minutes": att.working_minutes,
+            "status": att.status,
+            "late_minutes": att.late_minutes,
+            "overtime_minutes": att.overtime_minutes,
+        }
+        for att, emp in rows
+    ]
