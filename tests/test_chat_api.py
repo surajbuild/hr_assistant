@@ -29,10 +29,12 @@ from app.ai.llm import LLMProviderError
 from app.database.connection import SessionLocal
 from app.database.models import ChatLog, User
 from app.main import app
+from tests.helpers import TrackingClient
 from app.utils.security import create_access_token
 
-client = TestClient(app)
 db = SessionLocal()
+# TrackingClient removes the chat_logs rows this test causes (tests must leave the dev DB unchanged)
+client = TrackingClient(app, db)
 
 SEP = "-" * 55
 passed = 0
@@ -183,7 +185,7 @@ try:
 
         chk(r_err.status_code == 200, "Provider failure returns graceful 200 OK fallback", f"Status: {r_err.status_code}")
         data = r_err.json()
-        chk("temporarily unable" in data.get("answer", ""),
+        chk("temporarily unavailable" in data.get("answer", ""),
             "Fallback answer informs user of temporary issue without crashing", f"Answer: {data.get('answer')}")
 
     # -----------------------------------------------------------------------
@@ -200,7 +202,9 @@ try:
     chk(latest_log is not None, "ChatLog row created in MySQL database", "No ChatLog row found")
     chk(latest_log.question == "What are the standard working hours?", "ChatLog recorded exact user question", f"Got: {latest_log.question}")
     chk(latest_log.detected_intent == "POLICY", "ChatLog recorded detected_intent POLICY", f"Got: {latest_log.detected_intent}")
-    chk(latest_log.data_source == "policies.json", "ChatLog recorded data_source policies.json", f"Got: {latest_log.data_source}")
+    # Policy answers come from an uploaded document when one matches (RAG), else policies.json
+    chk(latest_log.data_source == "policies.json" or latest_log.data_source.endswith((".pdf", ".docx", ".txt")),
+        "ChatLog recorded policy data_source (policies.json or document)", f"Got: {latest_log.data_source}")
     chk(latest_log.response_time_ms is not None and latest_log.response_time_ms >= 0,
         f"ChatLog recorded response_time_ms ({latest_log.response_time_ms}ms)", "Missing response_time_ms")
     chk(latest_log.error is not None and "network timeout" in latest_log.error,
@@ -216,6 +220,7 @@ except Exception as exc:
     traceback.print_exc()
     failed += 1
 finally:
+    client.cleanup_chat_logs()
     db.close()
 
 if failed > 0:

@@ -1,120 +1,122 @@
-import { useState } from "react";
-import { LoginView } from "./LoginView";
-import { ChatView } from "./ChatView";
-import { DashboardView } from "./DashboardView";
+/**
+ * Root component: providers + client-side routes with auth/role guards.
+ * Unauthenticated → /login · role not allowed → /dashboard · "/" → /dashboard.
+ */
+import { Fragment, useEffect, type ReactNode } from "react";
+import { AppShell } from "@/components/layout/AppShell";
+import { EmptyState, LoadingState } from "@/components/States";
+import { ToastProvider } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { MessageSquare, LayoutDashboard, LogOut } from "lucide-react";
+import { AuthProvider, hasRole, useAuth } from "@/lib/auth";
+import { ALL_ROLES, HR_ROLES, STAFF_ROLES } from "@/lib/nav";
+import { matchPath, navigate, useRoute } from "@/lib/router";
+import type { Role } from "@/lib/types";
+import { AttendancePage } from "@/pages/AttendancePage";
+import { ChatPage } from "@/pages/ChatPage";
+import { DashboardPage } from "@/pages/DashboardPage";
+import { DepartmentsPage } from "@/pages/DepartmentsPage";
+import { DocumentsPage } from "@/pages/DocumentsPage";
+import { EmployeeDetailPage } from "@/pages/EmployeeDetailPage";
+import { EmployeeFormPage } from "@/pages/EmployeeFormPage";
+import { EmployeesPage } from "@/pages/EmployeesPage";
+import { LeavePage } from "@/pages/LeavePage";
+import { LoginPage } from "@/pages/LoginPage";
+import { PayrollPage } from "@/pages/PayrollPage";
+import { ReportsPage } from "@/pages/ReportsPage";
+import { SettingsPage } from "@/pages/SettingsPage";
+import { Compass } from "lucide-react";
 import "./index.css";
 
-// ── Simple JWT Decode Helper ───────────────────────────────────────────────────
+function Redirect({ to }: { to: string }) {
+  useEffect(() => {
+    navigate(to, { replace: true });
+  }, [to]);
+  return null;
+}
 
-function decodeTokenPayload(token: string): { sub?: string; role?: string } {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) return {};
-    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(json) as { sub?: string; role?: string };
-  } catch {
-    return {};
+interface RouteDef {
+  pattern: string;
+  roles: readonly Role[];
+  render: (params: Record<string, string>) => ReactNode;
+  fullHeight?: boolean;
+}
+
+const ROUTES: RouteDef[] = [
+  { pattern: "/dashboard", roles: ALL_ROLES, render: () => <DashboardPage /> },
+  { pattern: "/my-profile", roles: ALL_ROLES, render: () => <EmployeeDetailPage self /> },
+  { pattern: "/employees", roles: STAFF_ROLES, render: () => <EmployeesPage /> },
+  { pattern: "/employees/add", roles: HR_ROLES, render: () => <EmployeeFormPage /> },
+  { pattern: "/employees/:id/edit", roles: HR_ROLES, render: (p) => <EmployeeFormPage id={Number(p.id)} /> },
+  { pattern: "/employees/:id", roles: STAFF_ROLES, render: (p) => <EmployeeDetailPage id={Number(p.id)} /> },
+  { pattern: "/departments", roles: STAFF_ROLES, render: () => <DepartmentsPage /> },
+  { pattern: "/attendance", roles: ALL_ROLES, render: () => <AttendancePage /> },
+  { pattern: "/leave", roles: ALL_ROLES, render: () => <LeavePage /> },
+  { pattern: "/payroll", roles: ALL_ROLES, render: () => <PayrollPage /> },
+  { pattern: "/documents", roles: ALL_ROLES, render: () => <DocumentsPage /> },
+  { pattern: "/reports", roles: HR_ROLES, render: () => <ReportsPage /> },
+  { pattern: "/assistant", roles: ALL_ROLES, render: () => <ChatPage />, fullHeight: true },
+  { pattern: "/settings", roles: ["admin"], render: () => <SettingsPage /> },
+];
+
+function NotFound() {
+  return (
+    <div className="hr-card">
+      <EmptyState
+        icon={<Compass className="size-6" />}
+        title="Page not found"
+        description="The page you are looking for does not exist or has moved."
+        action={<Button onClick={() => navigate("/dashboard")}>Go to Dashboard</Button>}
+      />
+    </div>
+  );
+}
+
+function Routes() {
+  const { pathname } = useRoute();
+  const { token, user, role, loading } = useAuth();
+
+  if (pathname === "/login") {
+    if (token && user) return <Redirect to="/dashboard" />;
+    return <LoginPage />;
   }
+
+  if (!token) return <Redirect to="/login" />;
+
+  if (loading || !user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-page">
+        <LoadingState label="Loading your workspace..." />
+      </div>
+    );
+  }
+
+  if (pathname === "/") return <Redirect to="/dashboard" />;
+
+  for (const route of ROUTES) {
+    const params = matchPath(route.pattern, pathname);
+    if (!params) continue;
+    if (!hasRole(role, route.roles)) return <Redirect to="/dashboard" />;
+    return (
+      <AppShell fullHeight={route.fullHeight}>
+        <Fragment key={pathname}>{route.render(params)}</Fragment>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell>
+      <NotFound />
+    </AppShell>
+  );
 }
 
 export function App() {
-  // Initialise from localStorage so page refreshes keep the user logged in
-  const [token, setToken] = useState<string | null>(
-    () => localStorage.getItem("hr_token")
-  );
-
-  // Active view tab: "dashboard" for HR/Admin, "chat" for Employee/Manager
-  const [activeTab, setActiveTab] = useState<"chat" | "dashboard">(() => {
-    const raw = localStorage.getItem("hr_token");
-    if (!raw) return "chat";
-    const payload = decodeTokenPayload(raw);
-    return ["hr", "admin"].includes(payload.role || "") ? "dashboard" : "chat";
-  });
-
-  function handleLoginSuccess(newToken: string) {
-    localStorage.setItem("hr_token", newToken);
-    setToken(newToken);
-    const payload = decodeTokenPayload(newToken);
-    setActiveTab(["hr", "admin"].includes(payload.role || "") ? "dashboard" : "chat");
-  }
-
-  function handleLogout() {
-    localStorage.removeItem("hr_token");
-    setToken(null);
-  }
-
-  if (!token) {
-    return <LoginView onLoginSuccess={handleLoginSuccess} />;
-  }
-
-  const { role } = decodeTokenPayload(token);
-
   return (
-    <div className="flex flex-col h-screen w-full bg-background overflow-hidden">
-      {/* ── Global Top Navbar ── */}
-      <header className="flex items-center justify-between px-6 py-3 border-b bg-card shrink-0 z-10">
-        {/* Brand & Active Role */}
-        <div className="flex items-center gap-3">
-          <span className="font-bold text-base tracking-tight text-foreground">
-            AI HR Assistant
-          </span>
-          {role && (
-            <span className="text-[11px] font-semibold uppercase px-2.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-              {role}
-            </span>
-          )}
-        </div>
-
-        {/* Navigation Tabs */}
-        <nav className="flex items-center bg-muted/60 p-1 rounded-lg border">
-          <Button
-            variant={activeTab === "dashboard" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setActiveTab("dashboard")}
-            className="gap-2 text-xs h-8 px-3.5"
-          >
-            <LayoutDashboard className="size-3.5" />
-            HR Dashboard
-          </Button>
-
-          <Button
-            variant={activeTab === "chat" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setActiveTab("chat")}
-            className="gap-2 text-xs h-8 px-3.5"
-          >
-            <MessageSquare className="size-3.5" />
-            AI Assistant
-          </Button>
-        </nav>
-
-        {/* User actions */}
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleLogout}
-            className="gap-1.5 text-xs text-muted-foreground hover:text-destructive"
-          >
-            <LogOut className="size-3.5" />
-            Logout
-          </Button>
-        </div>
-      </header>
-
-      {/* ── Main View Area ── */}
-      <main className="flex-1 overflow-y-auto">
-        {activeTab === "dashboard" ? (
-          <DashboardView token={token} />
-        ) : (
-          <div className="h-full">
-            <ChatView token={token} onLogout={handleLogout} showHeader={false} />
-          </div>
-        )}
-      </main>
-    </div>
+    <AuthProvider>
+      <ToastProvider>
+        <Routes />
+      </ToastProvider>
+    </AuthProvider>
   );
 }
 

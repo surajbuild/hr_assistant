@@ -125,6 +125,10 @@ class Employee(Base):
         Integer, ForeignKey("employees.id"), nullable=True
     )
 
+    # Salary structure used by the payroll engine (D-021). Confidential:
+    # only HR/Admin and the employee themself may see it.
+    monthly_gross_salary: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+
     # Relationships
     manager: Mapped[Optional["Employee"]] = relationship(
         "Employee", remote_side="Employee.id", back_populates="subordinates"
@@ -320,10 +324,40 @@ class Document(Base):
     # Number of chunks created during RAG processing
     chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Parsing / indexing failure reason (status == failed)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Relationships
     uploaded_by_user: Mapped["User"] = relationship(
         "User", back_populates="uploaded_documents"
     )
+    chunks: Mapped[List["DocumentChunk"]] = relationship(
+        "DocumentChunk", back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class DocumentChunk(Base):
+    """
+    One retrievable text chunk of an indexed document (PRD Section 12 — RAG).
+
+    term_vector holds a JSON object {term: count} — the sparse lexical
+    "embedding" used for BM25 similarity search (see D-004).
+    """
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 1-based page number for PDFs; NULL for formats without pages
+    page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    term_vector: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
 
 class ChatLog(Base):

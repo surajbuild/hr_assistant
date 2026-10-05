@@ -1,0 +1,31 @@
+Work From Home Policy
+Version 1.0 — Effective 1 January 2026
+
+1. Purpose
+This policy defines when and how employees may work remotely while keeping productivity, security and team collaboration high.
+
+2. Eligibility
+Employees who have completed their probation period are eligible to request work from home (WFH). Interns and employees serving a notice period are not eligible unless approved by HR.
+
+3. WFH Allowance
+Eligible employees may work from home for up to 8 days per calendar month. Unused WFH days do not carry forward to the next month. WFH on Mondays and Fridays requires prior approval from the reporting manager.
+
+4. How to Apply
+WFH requests must be submitted through the HR portal at least 1 working day in advance. Emergency WFH requests (illness in the family, transport disruption) may be raised on the same day before 9:30 AM.
+
+5. Working Hours and Availability
+Employees working from home must follow standard office hours (9:00 AM to 6:00 PM), stay reachable on the company chat tool, and attend all scheduled meetings with video enabled where possible.
+
+6. Equipment and Expenses
+The company provides a laptop for remote work. Internet expenses are reimbursed up to INR 1,000 per month on submission of bills. Personal devices must not be used to store company data.
+
+7. Data Security
+Employees must connect through the company VPN, lock their screen when away, and must not work from public Wi-Fi networks without the VPN.
+
+8. Attendance
+WFH days are marked with the status "Work From Home" and count as present days. Late login rules (grace period of 15 minutes after 9:00 AM) apply equally to WFH days.
+
+9. Policy Violations
+Repeated non-availability during working hours or misuse of WFH may lead to withdrawal of WFH eligibility for up to 3 months.
+
+Contact: hr@company.com

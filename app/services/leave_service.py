@@ -12,12 +12,19 @@ This module is independent of FastAPI HTTP concerns (no Request, HTTPException,
 or status codes) so that it can be invoked by both API routers and AI/tool agents.
 """
 
-from datetime import date
-from typing import List, Optional
+from datetime import date, timedelta
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
-from app.database.models import Employee, Leave, LeaveStatus
+from app.database.models import Employee, Leave, LeaveStatus, LeaveType
+
+# Annual entitlements per calendar year — mirrors app/data/policies.json (leave_policy).
+LEAVE_ENTITLEMENTS: Dict[str, int] = {
+    LeaveType.CASUAL.value: 12,
+    LeaveType.SICK.value: 10,
+    LeaveType.EARNED.value: 15,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -205,3 +212,124 @@ def update_leave_status(
     db.commit()
     db.refresh(leave)
     return leave
+
+
+def cancel_leave(db: Session, *, leave_id: int, employee_id: int) -> Leave:
+    """
+    Cancel the employee's own pending leave request.
+
+    Raises:
+        LeaveNotFoundError: leave missing or not owned by the employee.
+        LeaveStatusError: leave is no longer pending.
+    """
+    leave = get_leave_by_id(db, leave_id)
+    if not leave or leave.employee_id != employee_id:
+        raise LeaveNotFoundError("Leave request not found.")
+    if leave.status != LeaveStatus.PENDING.value:
+        raise LeaveStatusError(f"Only pending requests can be cancelled. Current status is '{leave.status}'.")
+    leave.status = LeaveStatus.CANCELLED.value
+    db.commit()
+    db.refresh(leave)
+    return leave
+
+
+# ---------------------------------------------------------------------------
+# Calculations (leave days & balances)
+# ---------------------------------------------------------------------------
+
+def count_leave_days(from_date: date, to_date: date, year: Optional[int] = None) -> int:
+    """
+    Number of working days (Mon–Fri) covered by a leave, optionally clipped to one
+    calendar year. Weekends are not charged against leave balances (D-008).
+    """
+    start, end = from_date, to_date
+    if year is not None:
+        start = max(start, date(year, 1, 1))
+        end = min(end, date(year, 12, 31))
+    days = 0
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
+def get_leave_balance(db: Session, employee_id: int, year: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Leave balance per entitled type for a calendar year.
+
+    used      = approved working days in the year
+    pending   = pending working days in the year
+    remaining = entitled - used (never below 0)
+    """
+    year = year or date.today().year
+    leaves = (
+        db.query(Leave)
+        .filter(
+            Leave.employee_id == employee_id,
+            Leave.from_date <= date(year, 12, 31),
+            Leave.to_date >= date(year, 1, 1),
+        )
+        .all()
+    )
+    balance = []
+    for leave_type, entitled in LEAVE_ENTITLEMENTS.items():
+        used = sum(
+            count_leave_days(lv.from_date, lv.to_date, year)
+            for lv in leaves
+            if lv.leave_type == leave_type and lv.status == LeaveStatus.APPROVED.value
+        )
+        pending = sum(
+            count_leave_days(lv.from_date, lv.to_date, year)
+            for lv in leaves
+            if lv.leave_type == leave_type and lv.status == LeaveStatus.PENDING.value
+        )
+        balance.append({
+            "leave_type": leave_type,
+            "year": year,
+            "entitled": entitled,
+            "used": used,
+            "pending": pending,
+            "remaining": max(0, entitled - used),
+        })
+    return balance
+
+
+# ---------------------------------------------------------------------------
+# Company / Team listing
+# ---------------------------------------------------------------------------
+
+def list_leaves(
+    db: Session,
+    *,
+    scope_ids: Optional[Set[int]] = None,
+    status: Optional[str] = None,
+    employee_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Leave requests joined with employee info, newest first."""
+    query = db.query(Leave, Employee).join(Employee, Employee.id == Leave.employee_id)
+    if scope_ids is not None:
+        query = query.filter(Leave.employee_id.in_(scope_ids or {-1}))
+    if status:
+        query = query.filter(Leave.status == status)
+    if employee_id is not None:
+        query = query.filter(Leave.employee_id == employee_id)
+    rows = query.order_by(Leave.applied_at.desc(), Leave.id.desc()).all()
+    return [
+        {
+            "id": lv.id,
+            "employee_id": emp.id,
+            "employee_name": emp.name,
+            "employee_code": emp.employee_code,
+            "department": emp.department,
+            "leave_type": lv.leave_type,
+            "from_date": lv.from_date,
+            "to_date": lv.to_date,
+            "days": count_leave_days(lv.from_date, lv.to_date),
+            "status": lv.status,
+            "reason": lv.reason,
+            "applied_at": lv.applied_at,
+        }
+        for lv, emp in rows
+    ]

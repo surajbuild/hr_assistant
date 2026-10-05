@@ -311,6 +311,46 @@ def find_target_employee(db: Session, question: str, current_user: User) -> Tupl
 # Controlled Data Retrieval Layer
 # ---------------------------------------------------------------------------
 
+def retrieve_policy_context(
+    db: Session,
+    question: str,
+) -> Optional[Tuple[str, str, Optional[int], List[Dict[str, Any]]]]:
+    """
+    RAG retrieval for POLICY questions over uploaded HR documents.
+
+    Returns:
+        (context_string, primary_source_name, primary_page, sources) when relevant
+        chunks are found, otherwise None (caller falls back to policies.json).
+    """
+    from app.rag.retriever import search  # local import keeps router importable without RAG tables
+
+    try:
+        hits = search(db, question)
+    except Exception:
+        return None
+    if not hits:
+        return None
+
+    blocks = []
+    for i, hit in enumerate(hits, start=1):
+        page_str = f", page {hit['page']}" if hit["page"] else ""
+        blocks.append(f"[Source {i}: {hit['document_name']} ({hit['file_name']}{page_str})]\n{hit['content']}")
+    context = (
+        "The following excerpts were retrieved from the company's uploaded HR documents. "
+        "Answer only from them and mention the document name you used.\n\n" + "\n\n".join(blocks)
+    )
+    sources = [
+        {
+            "document": hit["document_name"],
+            "file_name": hit["file_name"],
+            "page": hit["page"],
+            "score": hit["score"],
+        }
+        for hit in hits
+    ]
+    return context, hits[0]["file_name"], hits[0]["page"], sources
+
+
 def retrieve_hr_context(
     db: Session,
     current_user: User,
@@ -497,16 +537,32 @@ def retrieve_hr_context(
         if not allowed:
             return denial_reason, "leave_database", denial_reason
 
+        # Balance is calculated in Python (leave_service) for the year asked about, else the current year
+        year_match = re.search(r"\b(20[0-9]{2})\b", question)
+        balance_year = int(year_match.group(1)) if year_match else date.today().year
+        balance = leave_service.get_leave_balance(db, target_emp.id, balance_year)
+
+        lines = [
+            f"Leave balance for {target_emp.name} ({target_emp.employee_code}) for calendar year {balance_year} "
+            f"(working days; calculated by the HR system):"
+        ]
+        for b in balance:
+            lines.append(
+                f"- {b['leave_type'].title()} leave: entitled {b['entitled']}, used {b['used']}, "
+                f"pending approval {b['pending']}, remaining {b['remaining']}"
+            )
+
         leaves = leave_service.get_leaves_for_employee(db, employee_id=target_emp.id)
         if not leaves:
-            return f"No leave records found for {target_emp.name}.", "leave_database", None
+            lines.append(f"\nNo leave applications found for {target_emp.name}.")
+            return "\n".join(lines), "leave_database", None
 
-        lines = [f"Leave applications for {target_emp.name} ({target_emp.employee_code}):"]
-        for lv in leaves:
-            days = (lv.to_date - lv.from_date).days + 1
+        lines.append(f"\nLeave applications for {target_emp.name}:")
+        for lv in sorted(leaves, key=lambda l: l.from_date, reverse=True):
+            days = leave_service.count_leave_days(lv.from_date, lv.to_date)
             lines.append(
                 f"- Type: {lv.leave_type.upper()} | Dates: {lv.from_date} to {lv.to_date} | "
-                f"Days: {days} | Status: {lv.status.upper()} | Reason: {lv.reason or 'None'}"
+                f"Working days: {days} | Status: {lv.status.upper()} | Reason: {lv.reason or 'None'}"
             )
         return "\n".join(lines), "leave_database", None
 

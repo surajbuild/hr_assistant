@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Dev-only tools (not needed to run the app) — see PROJECT_DECISIONS.md D-020
+# Browser QA harness scripts/ui_qa.py drives the locally installed Microsoft Edge (no browser download).
+playwright==1.63.0

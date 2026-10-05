@@ -11,10 +11,14 @@ Calculates:
 - Leave type distribution & recent applications.
 """
 
+import calendar
 from datetime import date
-from typing import Any, Dict, List, Optional
-from sqlalchemy import func, desc
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from sqlalchemy import case, func, desc
 from sqlalchemy.orm import Session
+
+from app.services import attendance_service, leave_service
 
 from app.database.models import (
     Attendance,
@@ -264,4 +268,222 @@ def get_dashboard_summary(
         "late_leaders": late_leaders,
         "leave_breakdown": leave_breakdown,
         "recent_leaves": recent_leaves,
+        "monthly_attendance": get_monthly_attendance_trend(db, target_date),
     }
+
+
+# ---------------------------------------------------------------------------
+# Monthly Attendance Trend (PRD §21 chart: "Monthly attendance")
+# ---------------------------------------------------------------------------
+
+def get_monthly_attendance_trend(
+    db: Session,
+    ref_date: date,
+    months: int = 6,
+    scope_ids: Optional[Set[int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Status counts per month for the `months` months ending at `ref_date`'s month
+    (only months that have data are returned).
+
+    attendance_rate = (present + 0.5 * half_day) / (present + half_day + absent) * 100
+    """
+    start_year, start_month = ref_date.year, ref_date.month - (months - 1)
+    while start_month <= 0:
+        start_month += 12
+        start_year -= 1
+    start = date(start_year, start_month, 1)
+    end_month_last_day = calendar.monthrange(ref_date.year, ref_date.month)[1]
+    end = date(ref_date.year, ref_date.month, end_month_last_day)
+
+    query = db.query(
+        func.year(Attendance.attendance_date).label("y"),
+        func.month(Attendance.attendance_date).label("m"),
+        Attendance.status,
+        func.count(Attendance.id),
+        func.sum(case((Attendance.late_minutes > 0, 1), else_=0)),
+    ).filter(Attendance.attendance_date >= start, Attendance.attendance_date <= end)
+    if scope_ids is not None:
+        query = query.filter(Attendance.employee_id.in_(scope_ids or {-1}))
+    rows = query.group_by("y", "m", Attendance.status).all()
+
+    buckets: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for y, m, att_status, count, late in rows:
+        bucket = buckets.setdefault(
+            (int(y), int(m)),
+            {"present": 0, "absent": 0, "half_day": 0, "leave": 0, "late": 0},
+        )
+        if att_status in bucket:
+            bucket[att_status] += int(count)
+        bucket["late"] += int(late or 0)
+
+    trend = []
+    for (y, m) in sorted(buckets):
+        b = buckets[(y, m)]
+        worked_basis = b["present"] + b["half_day"] + b["absent"]
+        rate = ((b["present"] + 0.5 * b["half_day"]) / worked_basis * 100) if worked_basis else 0.0
+        trend.append({
+            "month": f"{y}-{m:02d}",
+            "label": date(y, m, 1).strftime("%b %Y"),
+            "present": b["present"],
+            "absent": b["absent"],
+            "late": b["late"],
+            "half_day": b["half_day"],
+            "leave": b["leave"],
+            "attendance_rate": round(rate, 1),
+        })
+    return trend
+
+
+# ---------------------------------------------------------------------------
+# Personal / Team Dashboard (any role)
+# ---------------------------------------------------------------------------
+
+def get_my_dashboard(db: Session, current_user: User, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """
+    Personal overview for the logged-in user:
+      - today's attendance record
+      - attendance stats for the reference month (latest month with own data if none this month)
+      - leave balance (calendar year of the reference month)
+      - latest salary slip
+      - for managers: team snapshot (direct reports)
+    """
+    employee = current_user.employee
+    today = date.today()
+    if employee is None:
+        return {"employee": None, "month_label": today.strftime("%B %Y"), "today": None,
+                "attendance": None, "leave_balance": [], "latest_salary": None, "team": None}
+
+    # Reference month: current month if it has own data, else the latest month with own data
+    if ref_date is None:
+        latest_own = (
+            db.query(func.max(Attendance.attendance_date))
+            .filter(Attendance.employee_id == employee.id)
+            .scalar()
+        )
+        has_this_month = latest_own is not None and latest_own.year == today.year and latest_own.month == today.month
+        ref_date = today if (has_this_month or latest_own is None) else latest_own
+    month_start = ref_date.replace(day=1)
+    month_end = ref_date.replace(day=calendar.monthrange(ref_date.year, ref_date.month)[1])
+
+    summary = attendance_service.get_attendance_summary(db, employee.id, month_start, month_end)
+    basis = summary["present_days"] + summary["half_day_days"] + summary["absent_days"]
+    attendance_pct = (
+        round((summary["present_days"] + 0.5 * summary["half_day_days"]) / basis * 100, 1) if basis else 0.0
+    )
+
+    today_record = attendance_service.get_attendance_by_date(db, employee_id=employee.id, attendance_date=today)
+
+    latest_salary = (
+        db.query(Salary)
+        .filter(Salary.employee_id == employee.id)
+        .order_by(Salary.year.desc(), Salary.month.desc())
+        .first()
+    )
+
+    team = None
+    if current_user.role == UserRole.MANAGER.value:
+        members = (
+            db.query(Employee)
+            .filter(Employee.manager_id == employee.id, Employee.status == EmployeeStatus.ACTIVE.value)
+            .order_by(Employee.name.asc())
+            .all()
+        )
+        member_ids = [m.id for m in members]
+        team_day = get_latest_team_day(db, member_ids)
+        day_records = {
+            r.employee_id: r
+            for r in db.query(Attendance).filter(
+                Attendance.attendance_date == team_day, Attendance.employee_id.in_(member_ids or [-1])
+            ).all()
+        } if team_day else {}
+        on_leave = (
+            db.query(Leave)
+            .filter(
+                Leave.employee_id.in_(member_ids or [-1]),
+                Leave.status == LeaveStatus.APPROVED.value,
+                Leave.from_date <= (team_day or today),
+                Leave.to_date >= (team_day or today),
+            )
+            .count()
+        )
+        pending = (
+            db.query(Leave)
+            .filter(Leave.employee_id.in_(member_ids or [-1]), Leave.status == LeaveStatus.PENDING.value)
+            .count()
+        )
+        team = {
+            "size": len(members),
+            "reference_date": str(team_day) if team_day else None,
+            "present_today": sum(
+                1 for r in day_records.values()
+                if r.status in (AttendanceStatus.PRESENT.value, AttendanceStatus.HALF_DAY.value)
+            ),
+            "on_leave_today": on_leave,
+            "pending_leaves": pending,
+            "members": [
+                {
+                    "id": m.id,
+                    "name": m.name,
+                    "designation": m.designation,
+                    "today_status": day_records[m.id].status if m.id in day_records else "not_marked",
+                }
+                for m in members
+            ],
+        }
+
+    return {
+        "employee": {
+            "id": employee.id,
+            "employee_code": employee.employee_code,
+            "name": employee.name,
+            "department": employee.department,
+            "designation": employee.designation,
+        },
+        "month_label": ref_date.strftime("%B %Y"),
+        "today": {
+            "status": today_record.status,
+            "in_time": str(today_record.in_time) if today_record.in_time else None,
+            "out_time": str(today_record.out_time) if today_record.out_time else None,
+        } if today_record else None,
+        "attendance": {
+            "present_days": summary["present_days"],
+            "absent_days": summary["absent_days"],
+            "late_days": summary["late_days"],
+            "half_day_days": summary["half_day_days"],
+            "leave_days": summary["leave_days"],
+            "total_working_minutes": summary["total_working_minutes"],
+            "total_overtime_minutes": summary["total_overtime_minutes"],
+            "attendance_percentage": attendance_pct,
+        },
+        "leave_balance": leave_service.get_leave_balance(db, employee.id, ref_date.year),
+        "latest_salary": {
+            "month": latest_salary.month,
+            "year": latest_salary.year,
+            "gross_salary": float(latest_salary.gross_salary),
+            "net_salary": float(latest_salary.net_salary),
+            "pf": float(latest_salary.pf),
+            "deductions": float(latest_salary.deductions),
+            "overtime_amount": float(latest_salary.overtime_amount),
+        } if latest_salary else None,
+        "team": team,
+    }
+
+
+def get_latest_team_day(db: Session, member_ids: List[int]) -> Optional[date]:
+    """Today if the team has records today, else the latest date with team records."""
+    if not member_ids:
+        return None
+    today = date.today()
+    has_today = (
+        db.query(Attendance.id)
+        .filter(Attendance.attendance_date == today, Attendance.employee_id.in_(member_ids))
+        .first()
+    )
+    if has_today:
+        return today
+    return (
+        db.query(func.max(Attendance.attendance_date))
+        .filter(Attendance.employee_id.in_(member_ids))
+        .scalar()
+    )

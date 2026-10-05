@@ -22,12 +22,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.helpers import TrackingClient
 from app.database.connection import SessionLocal
 from app.database.models import Employee, Leave, LeaveStatus, User
 from app.utils.security import create_access_token
 
-client = TestClient(app)
 db = SessionLocal()
+# TrackingClient removes the chat_logs rows this test causes (tests must leave the dev DB unchanged)
+client = TrackingClient(app, db)
 
 # Counters
 passed_count = 0
@@ -91,20 +93,25 @@ def run_all_rbac_tests():
     chk(client.get("/employees/me", headers=hr_hdr).status_code == 200, "HR can access own profile -> 200")
     chk(client.get("/employees/me", headers=admin_hdr).status_code == 200, "Admin can access own profile -> 200")
 
-    # 1.2 GET /employees (Directory listing: HR & Admin only)
+    # 1.2 GET /employees (Directory: HR & Admin all, Manager team only — PROJECT_DECISIONS D-010)
     chk(client.get("/employees").status_code == 401, "GET /employees unauthenticated -> 401")
     chk(client.get("/employees", headers=emp_hdr).status_code == 403, "Employee blocked from GET /employees -> 403")
-    chk(client.get("/employees", headers=mgr_hdr).status_code == 403, "Manager blocked from GET /employees -> 403")
+    r_mgr_all = client.get("/employees", headers=mgr_hdr)
+    mgr_team_ids = {sub.id for sub in mgr_user.employee.subordinates} | {mgr_user.employee_id}
+    chk(r_mgr_all.status_code == 200 and {e["id"] for e in r_mgr_all.json()} == mgr_team_ids,
+        "Manager sees only own team in GET /employees -> 200")
     r_hr_all = client.get("/employees", headers=hr_hdr)
-    chk(r_hr_all.status_code == 200 and len(r_hr_all.json()) >= 7, "HR can list all employees -> 200")
+    chk(r_hr_all.status_code == 200 and len(r_hr_all.json()) >= 6, "HR can list all employees -> 200")
     r_adm_all = client.get("/employees", headers=admin_hdr)
-    chk(r_adm_all.status_code == 200 and len(r_adm_all.json()) >= 7, "Admin can list all employees -> 200")
+    chk(r_adm_all.status_code == 200 and len(r_adm_all.json()) >= 6, "Admin can list all employees -> 200")
 
     # 1.3 GET /employees/{id} (HR & Admin only)
     target_id = peer_user.employee_id
     chk(client.get(f"/employees/{target_id}").status_code == 401, f"GET /employees/{target_id} unauthenticated -> 401")
     chk(client.get(f"/employees/{target_id}", headers=emp_hdr).status_code == 403, "Employee blocked from GET /employees/{id} -> 403")
-    chk(client.get(f"/employees/{target_id}", headers=mgr_hdr).status_code == 403, "Manager blocked from GET /employees/{id} -> 403")
+    expected_mgr = 200 if target_id in mgr_team_ids else 403
+    chk(client.get(f"/employees/{target_id}", headers=mgr_hdr).status_code == expected_mgr,
+        f"Manager GET /employees/{{id}} follows team scope -> {expected_mgr}")
     chk(client.get(f"/employees/{target_id}", headers=hr_hdr).status_code == 200, "HR can view any employee by ID -> 200")
     chk(client.get(f"/employees/{target_id}", headers=admin_hdr).status_code == 200, "Admin can view any employee by ID -> 200")
 
@@ -320,6 +327,7 @@ if __name__ == "__main__":
     try:
         run_all_rbac_tests()
     finally:
+        client.cleanup_chat_logs()
         db.close()
     if failed_count > 0:
         sys.exit(1)

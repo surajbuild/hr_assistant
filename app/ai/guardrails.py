@@ -4,6 +4,7 @@ app/ai/guardrails.py
 Security, RBAC validation, and anti-hallucination guardrails for the AI assistant.
 """
 
+import re
 from typing import Optional, Tuple
 from app.database.models import User, UserRole
 
@@ -88,6 +89,42 @@ def check_rbac_access(
         return True, None
 
     return True, None
+
+
+# ---------------------------------------------------------------------------
+# Prompt Injection Detection (PRD Section 18)
+# ---------------------------------------------------------------------------
+
+PROMPT_INJECTION_REFUSAL = (
+    "I can't help with that request. I only answer HR questions using the data "
+    "your role is permitted to access, and I can't change my instructions or your permissions."
+)
+
+_INJECTION_PATTERNS = [
+    r"\b(ignore|disregard|forget|override|bypass|skip)\b.{0,40}\b(instruction|instructions|rules|guardrails|prompt|restrictions|policy|policies|permissions?)\b",
+    r"\b(previous|prior|above|earlier|system)\b.{0,20}\b(instruction|instructions|prompt)\b.{0,20}\b(ignore|disregard|forget|override)\b",
+    r"\byou are now\b",
+    r"\bpretend (to be|you are)\b",
+    r"\bact as (an? )?(admin|administrator|hr|super ?user|root|developer)\b",
+    r"\b(give|grant|make|elevate)\b.{0,20}\b(me|my)\b.{0,20}\b(admin|administrator|hr|root|full|super ?user)\b.{0,15}\b(access|rights|role|privileges?|permissions?)\b",
+    r"\b(reveal|show|print|display|repeat|leak)\b.{0,30}\b(system prompt|your prompt|your instructions|hidden instructions)\b",
+    r"\b(jailbreak|developer mode|dan mode|sudo mode|god mode)\b",
+    r"\b(drop|delete|truncate|alter|update)\s+table\b",
+    r"\bselect\s+\*?\s*.{0,40}\bfrom\b\s+\w+",
+    r";\s*--",
+]
+_INJECTION_REGEXES = [re.compile(p, re.IGNORECASE) for p in _INJECTION_PATTERNS]
+
+
+def detect_prompt_injection(question: str) -> bool:
+    """
+    True when the question tries to override instructions, escalate privileges,
+    extract the system prompt, or smuggle SQL. Such requests are refused before
+    any data is retrieved, regardless of the user's role.
+    """
+    if not question:
+        return False
+    return any(rx.search(question) for rx in _INJECTION_REGEXES)
 
 
 def sanitize_question(question: str) -> str:

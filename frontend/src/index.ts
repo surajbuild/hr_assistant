@@ -1,61 +1,75 @@
+/**
+ * Bun dev/prod server for the AI HR Assistant frontend.
+ *
+ * - `/api/*`  → proxied to the FastAPI backend (`BACKEND_URL`, default http://localhost:8000)
+ *               with the `/api` prefix stripped. Method, body (streamed), query string and the
+ *               relevant headers are forwarded; the backend response is passed through unchanged
+ *               (status, content-type, content-disposition for xlsx downloads, ...).
+ * - `/*`      → the React SPA (client-side routing in src/lib/router.tsx).
+ */
 import { serve } from "bun";
 import index from "./index.html";
 
-const BACKEND = process.env.BACKEND_URL || "http://localhost:8000";
+const BACKEND = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/+$/, "");
+
+/** Request headers forwarded to the backend. */
+const FORWARD_REQUEST_HEADERS = ["content-type", "authorization", "accept", "accept-language", "cookie"];
 
 /**
- * Forward an incoming Bun request to the FastAPI backend.
- * Preserves method, body, Content-Type, and Authorization headers.
+ * Response headers that must not be copied verbatim: Bun's fetch already decoded the body,
+ * so encoding/length headers from upstream would be wrong.
  */
-async function proxyTo(req: Request, backendUrl: string): Promise<Response> {
-  const headers: Record<string, string> = {};
+const DROP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding", "connection"]);
 
-  const contentType = req.headers.get("content-type");
-  if (contentType) headers["content-type"] = contentType;
+async function proxyApi(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const path = url.pathname.replace(/^\/api/, "") || "/";
+  const target = `${BACKEND}${path}${url.search}`;
 
-  const authorization = req.headers.get("authorization");
-  if (authorization) headers["authorization"] = authorization;
+  const headers = new Headers();
+  for (const name of FORWARD_REQUEST_HEADERS) {
+    const value = req.headers.get(name);
+    if (value) headers.set(name, value);
+  }
 
-  return fetch(backendUrl, {
-    method: req.method,
-    headers,
-    // Only forward body for methods that can carry one
-    body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,
-    // Required so Bun streams the body correctly
-    duplex: "half",
-  } as RequestInit);
+  const hasBody = !["GET", "HEAD"].includes(req.method);
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body: hasBody ? req.body : undefined,
+      redirect: "manual",
+      // Required so Bun streams the request body
+      duplex: "half",
+    } as RequestInit);
+  } catch (err) {
+    console.error(`[proxy] ${req.method} ${target} failed:`, err);
+    return Response.json(
+      { detail: "Unable to connect to server. Please check if the backend is running." },
+      { status: 502 },
+    );
+  }
+
+  const responseHeaders = new Headers();
+  upstream.headers.forEach((value, key) => {
+    if (!DROP_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.append(key, value);
+  });
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  });
 }
 
 const server = serve({
   routes: {
-    // ── Proxy: /auth/* → FastAPI /auth/* ────────────────────────────────────
-    "/auth/:path*": async (req) => {
-      const url = new URL(req.url);
-      // Reconstruct the full path including any query string
-      const target = `${BACKEND}${url.pathname}${url.search}`;
-      return proxyTo(req, target);
-    },
+    // ── Proxy: /api/* → FastAPI (prefix stripped) ──────────────────────────
+    "/api/*": proxyApi,
 
-    // ── Proxy: /chat → FastAPI /chat ─────────────────────────────────────
-    "/chat": async (req) => {
-      return proxyTo(req, `${BACKEND}/chat`);
-    },
-
-    // ── Proxy: /dashboard/* → FastAPI /dashboard/* ───────────────────────
-    "/dashboard/:path*": async (req) => {
-      const url = new URL(req.url);
-      const target = `${BACKEND}${url.pathname}${url.search}`;
-      return proxyTo(req, target);
-    },
-
-    // ── Proxy: /reports/* → FastAPI /reports/* ───────────────────────────
-    "/reports/:path*": async (req) => {
-      const url = new URL(req.url);
-      const target = `${BACKEND}${url.pathname}${url.search}`;
-      return proxyTo(req, target);
-    },
-
-    // ── Serve React SPA for every other route ────────────────────────────
+    // ── Serve React SPA for every other route ──────────────────────────────
     "/*": index,
   },
 
@@ -68,5 +82,5 @@ const server = serve({
   },
 });
 
-console.log(`🚀 Server running at ${server.url}`);
-console.log(`🔀 Proxying /auth/* and /chat → ${BACKEND}`);
+console.log(`Server running at ${server.url}`);
+console.log(`Proxying /api/* -> ${BACKEND}`);
