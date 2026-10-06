@@ -1,9 +1,11 @@
-/** Simple fixed-overlay modal dialog + confirm dialog. Esc and backdrop click close it. */
-import { useEffect, useRef, type ReactNode } from "react";
-import { X } from "lucide-react";
+/**
+ * Modal + ConfirmDialog (API unchanged) on top of Radix Dialog: focus trap, Escape, scroll lock, focus return.
+ * Phones get a bottom sheet, ≥sm a centred panel. The first form field (not the close button) takes focus.
+ */
+import { type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Spinner } from "./States";
 
 export function Modal({
   open,
@@ -24,68 +26,26 @@ export function Modal({
   size?: "sm" | "md" | "lg" | "xl";
   className?: string;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    // focus first focusable element
-    const t = setTimeout(() => {
-      const el = panelRef.current?.querySelector<HTMLElement>(
-        "input:not([type=hidden]), select, textarea, button:not([data-close])",
-      );
-      el?.focus();
-    }, 20);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-      clearTimeout(t);
-    };
-  }, [open]);
-
-  if (!open) return null;
-
-  const sizes = { sm: "max-w-sm", md: "max-w-lg", lg: "max-w-2xl", xl: "max-w-4xl" };
-
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
-      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        className={cn(
-          "relative flex max-h-[92vh] w-full flex-col rounded-t-xl bg-white shadow-xl sm:rounded-xl",
-          sizes[size],
-          className,
-        )}
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        size={size}
+        className={className}
+        {...(description ? {} : { "aria-describedby": undefined })}
+        onOpenAutoFocus={(e) => {
+          const panel = e.currentTarget as HTMLElement;
+          const el = panel.querySelector<HTMLElement>("input:not([type=hidden]), select, textarea, [data-autofocus]");
+          if (el) {
+            e.preventDefault();
+            el.focus();
+          }
+        }}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink">{title}</h2>
-            {description && <p className="mt-0.5 text-sm text-ink-muted">{description}</p>}
-          </div>
-          <button
-            type="button"
-            data-close
-            onClick={onClose}
-            className="no-print -mr-1 rounded-md p-1 text-ink-muted hover:bg-slate-100 hover:text-ink focus-visible:outline-2 focus-visible:outline-brand"
-            aria-label="Close dialog"
-          >
-            <X className="size-5" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
-        {footer && <div className="no-print flex flex-wrap justify-end gap-2 border-t border-border px-5 py-3">{footer}</div>}
-      </div>
-    </div>
+        <DialogHeader title={title} description={description} />
+        <div className={cn("flex-1 overflow-y-auto px-5 py-4")}>{children}</div>
+        {footer && <DialogFooter>{footer}</DialogFooter>}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -116,17 +76,16 @@ export function ConfirmDialog({
       size="sm"
       footer={
         <>
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
+          <Button variant="outline" onClick={onCancel} disabled={busy} data-autofocus>
             Cancel
           </Button>
-          <Button variant={tone === "danger" ? "destructive" : "default"} onClick={onConfirm} disabled={busy}>
-            {busy && <Spinner />}
+          <Button variant={tone === "danger" ? "destructive" : "default"} onClick={onConfirm} loading={busy}>
             {confirmLabel}
           </Button>
         </>
       }
     >
-      <div className="text-sm text-ink-muted">{message}</div>
+      <div className="text-sm text-muted-foreground">{message}</div>
     </Modal>
   );
 }

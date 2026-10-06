@@ -1,4 +1,4 @@
-/** Lightweight toast notifications: const toast = useToast(); toast.success("Saved"). */
+/** Toast notifications: const toast = useToast(); toast.success("Saved"). Every mutation should call one. */
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -48,27 +48,31 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div
         aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2 px-4 sm:inset-x-auto sm:right-4 sm:items-end"
+        className="pointer-events-none fixed inset-x-0 bottom-4 z-[80] flex flex-col items-center gap-2 px-4 sm:inset-x-auto sm:right-4 sm:items-end"
       >
         {items.map((t) => (
           <div
             key={t.id}
             role={t.kind === "error" ? "alert" : "status"}
-            className={cn(
-              "pointer-events-auto flex w-full max-w-sm items-start gap-2.5 rounded-lg border bg-white px-3.5 py-3 text-sm shadow-lg animate-in fade-in slide-in-from-bottom-2",
-              t.kind === "success" && "border-emerald-200",
-              t.kind === "error" && "border-red-200",
-              t.kind === "info" && "border-blue-200",
-            )}
+            className="pointer-events-auto flex w-full max-w-sm animate-toast-in items-start gap-2.5 rounded-xl border border-border bg-popover px-3.5 py-3 text-sm shadow-float"
           >
-            {t.kind === "success" && <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />}
-            {t.kind === "error" && <AlertCircle className="mt-0.5 size-4 shrink-0 text-danger" />}
-            {t.kind === "info" && <Info className="mt-0.5 size-4 shrink-0 text-info" />}
-            <p className="flex-1 text-ink">{t.message}</p>
+            <span
+              className={cn(
+                "mt-px flex size-5 shrink-0 items-center justify-center rounded-full",
+                t.kind === "success" && "bg-status-present-bg text-status-present-fg",
+                t.kind === "error" && "bg-status-absent-bg text-status-absent-fg",
+                t.kind === "info" && "bg-status-half-bg text-status-half-fg",
+              )}
+            >
+              {t.kind === "success" && <CheckCircle2 className="size-3.5" />}
+              {t.kind === "error" && <AlertCircle className="size-3.5" />}
+              {t.kind === "info" && <Info className="size-3.5" />}
+            </span>
+            <p className="flex-1 text-foreground">{t.message}</p>
             <button
               type="button"
               onClick={() => dismiss(t.id)}
-              className="rounded p-0.5 text-ink-muted hover:bg-slate-100"
+              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               aria-label="Dismiss notification"
             >
               <X className="size-3.5" />
