@@ -202,7 +202,7 @@ export function ChatPage() {
   const empty = !historyLoading && messages.length === 0;
 
   return (
-    <div className="flex h-[calc(100dvh-52px-40px)] min-h-[480px] flex-1 gap-5 sm:h-[calc(100dvh-52px-48px)]">
+    <div className="flex h-[calc(100dvh-56px-40px)] min-h-[480px] flex-1 gap-5 sm:h-[calc(100dvh-56px-48px)]">
       {/* Chat card */}
       <section className="hr-card flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
