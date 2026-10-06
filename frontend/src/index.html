@@ -11,6 +11,17 @@
       rel="stylesheet"
     />
     <title>AI HR Assistant — HRMS</title>
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      /* Apply the saved/system theme before first paint so there is no flash. Mirrors lib/theme.tsx. */
+      (function () {
+        try {
+          var mode = localStorage.getItem("hr_theme");
+          var dark = mode === "dark" || ((mode === null || mode === "system") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
     <script type="module" src="./frontend.tsx" async></script>
   </head>
   <body>
