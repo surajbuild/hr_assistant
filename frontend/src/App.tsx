@@ -8,6 +8,7 @@ import { EmptyState, LoadingState } from "@/components/States";
 import { ToastProvider } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { AuthProvider, hasRole, useAuth } from "@/lib/auth";
+import { ThemeProvider } from "@/lib/theme";
 import { ALL_ROLES, HR_ROLES, STAFF_ROLES } from "@/lib/nav";
 import { matchPath, navigate, useRoute } from "@/lib/router";
 import type { Role } from "@/lib/types";
@@ -84,8 +85,8 @@ function Routes() {
 
   if (loading || !user) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-page">
-        <LoadingState label="Loading your workspace..." />
+      <div className="mx-auto flex min-h-screen max-w-md items-center justify-center bg-background">
+        <LoadingState label="Loading your workspace..." className="w-full" />
       </div>
     );
   }
@@ -112,11 +113,13 @@ function Routes() {
 
 export function App() {
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <Routes />
-      </ToastProvider>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <ToastProvider>
+          <Routes />
+        </ToastProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

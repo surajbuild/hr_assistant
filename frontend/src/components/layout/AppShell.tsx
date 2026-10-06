@@ -1,248 +1,173 @@
 /**
- * HRMS app shell: sticky white 52px top navbar (brand · scrollable nav · role pill + profile menu),
- * hamburger dropdown below 1280px (xl), and a #f1f5f9 content area (max-w 1400px, 24px padding).
+ * App shell (design system v2): collapsible left sidebar (desktop), icon-only rail (tablet), slide-over drawer
+ * with focus trap (phone), and a slim 56px top bar with breadcrumb, Ctrl+K search, notifications (approvers only),
+ * theme toggle and profile menu. Content area: max 1400px, 16/24/32px gutters, page-in motion.
  *
- * Desktop nav density: 1280–1535px shows text-only links (11 admin items must fit at 1400px);
- * ≥1536px (2xl) adds icons and the user's name. If items still overflow, scroll arrows appear so
- * no menu item is ever hidden without a visible cue.
+ * Breakpoints: <768px drawer · 768–1279px rail · ≥1280px expanded (user can collapse; remembered in localStorage).
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, LogOut, Menu, UserCircle, X } from "lucide-react";
-import { Avatar } from "@/components/Avatar";
-import { RoleBadge } from "@/components/StatusBadge";
-import { displayName, useAuth } from "@/lib/auth";
-import { isActivePath, navForRole } from "@/lib/nav";
-import { Link, navigate, useRoute } from "@/lib/router";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronRight, Menu, Search } from "lucide-react";
+import { CloseButton, Dialog, DialogDescription, DialogTitle, DrawerContent } from "@/components/ui/dialog";
+import { Hint } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { navForRole } from "@/lib/nav";
+import { useAuth } from "@/lib/auth";
+import { useRoute } from "@/lib/router";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import { cn } from "@/lib/utils";
+import { BrandMark } from "./BrandMark";
+import { CommandPalette } from "./CommandPalette";
+import { NotificationBell } from "./NotificationBell";
+import { ProfileMenu } from "./ProfileMenu";
+import { Sidebar, SidebarNav } from "./Sidebar";
+import { ThemeMenu } from "./ThemeMenu";
 
-export function BrandMark({ className }: { className?: string }) {
-  return (
-    <span
-      className={cn(
-        "relative inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-navy text-sm font-bold text-white",
-        className,
-      )}
-      aria-hidden="true"
-    >
-      HR
-      <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full border-2 border-white bg-brand" />
-    </span>
-  );
-}
+export { BrandMark };
 
-function ProfileMenu() {
-  const { user, logout } = useAuth();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const name = displayName(user);
+const SIDEBAR_KEY = "hr_sidebar";
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  function handleLogout() {
-    setOpen(false);
-    logout();
-    navigate("/login", { replace: true });
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "collapsed";
+  } catch {
+    return false;
   }
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand"
-      >
-        <Avatar name={name} size="sm" />
-        <span className="hidden max-w-[140px] truncate text-sm font-medium text-ink sm:block xl:hidden 2xl:block">{name}</span>
-        <ChevronDown className="hidden size-4 text-ink-muted sm:block" />
-      </button>
-      {open && (
-        <div role="menu" className="absolute right-0 mt-2 w-60 overflow-hidden rounded-lg border border-border bg-white shadow-lg">
-          <div className="border-b border-border px-4 py-3">
-            <p className="truncate text-sm font-semibold text-ink">{name}</p>
-            <p className="truncate text-xs text-ink-muted">{user?.email}</p>
-            {user?.employee?.designation && <p className="mt-0.5 truncate text-xs text-ink-muted">{user.employee.designation}</p>}
-          </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              navigate("/my-profile");
-            }}
-            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-ink hover:bg-slate-50"
-          >
-            <UserCircle className="size-4 text-ink-muted" /> My Profile
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleLogout}
-            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-danger hover:bg-danger-light"
-          >
-            <LogOut className="size-4" /> Logout
-          </button>
-        </div>
-      )}
-    </div>
-  );
 }
 
-function DesktopNav({ items, pathname }: { items: ReturnType<typeof navForRole>; pathname: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [edges, setEdges] = useState({ left: false, right: false });
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const update = () =>
-      setEdges({
-        left: el.scrollLeft > 2,
-        right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2,
-      });
-    update();
-    el.addEventListener("scroll", update, { passive: true });
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => {
-      el.removeEventListener("scroll", update);
-      ro.disconnect();
-    };
-  }, [items.length]);
-
-  // Keep the active item in view (e.g. after navigating to Settings via the profile menu)
-  useEffect(() => {
-    ref.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [pathname]);
-
-  const scrollBy = (dx: number) => ref.current?.scrollBy({ left: dx, behavior: "smooth" });
-
-  return (
-    <div className="relative ml-4 hidden min-w-0 flex-1 items-center xl:flex">
-      {edges.left && (
-        <button
-          type="button"
-          onClick={() => scrollBy(-240)}
-          aria-label="Scroll menu left"
-          className="absolute left-0 z-10 flex h-full items-center bg-gradient-to-r from-white via-white to-transparent pr-3 text-ink-muted hover:text-ink"
-        >
-          <ChevronLeft className="size-4" />
-        </button>
-      )}
-      <nav ref={ref} aria-label="Main" className="scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-        {items.map((item) => {
-          const active = isActivePath(pathname, item.path);
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors",
-                active ? "bg-brand-light text-brand" : "text-slate-600 hover:bg-slate-100 hover:text-ink",
-              )}
-            >
-              <Icon className="hidden size-4 2xl:block" aria-hidden="true" />
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-      {edges.right && (
-        <button
-          type="button"
-          onClick={() => scrollBy(240)}
-          aria-label="Scroll menu right"
-          className="absolute right-0 z-10 flex h-full items-center bg-gradient-to-l from-white via-white to-transparent pl-3 text-ink-muted hover:text-ink"
-        >
-          <ChevronRight className="size-4" />
-        </button>
-      )}
-    </div>
-  );
+/** Breadcrumb trail derived from the route + role-filtered nav (so it never names a page the role can't open). */
+function useBreadcrumb(pathname: string): string[] {
+  const { role } = useAuth();
+  const items = navForRole(role);
+  const base = items.filter((n) => pathname === n.path || pathname.startsWith(n.path + "/")).sort((a, b) => b.path.length - a.path.length)[0];
+  if (!base) return ["Not found"];
+  const trail = [base.group, base.label];
+  if (pathname === "/employees/add") trail.push("New");
+  else if (/^\/employees\/[^/]+\/edit$/.test(pathname)) trail.push("Edit");
+  else if (/^\/employees\/[^/]+$/.test(pathname)) trail.push("Profile");
+  return trail;
 }
 
 export function AppShell({ children, fullHeight }: { children: ReactNode; fullHeight?: boolean }) {
-  const { role } = useAuth();
   const { pathname } = useRoute();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const items = navForRole(role);
+  const wide = useMediaQuery("(min-width: 1280px)");
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [drawer, setDrawer] = useState(false);
+  const [palette, setPalette] = useState(false);
+  const trail = useBreadcrumb(pathname);
+  const rail = !wide || collapsed;
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
-  useEffect(() => setMobileOpen(false), [pathname]);
+  useEffect(() => setDrawer(false), [pathname]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function toggleCollapsed() {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(SIDEBAR_KEY, c ? "expanded" : "collapsed");
+      } catch {
+        /* ignore */
+      }
+      return !c;
+    });
+  }
 
   return (
-    <div className="flex min-h-screen flex-col bg-page">
-      <header className="sticky top-0 z-40 border-b border-border bg-white">
-        <div className="flex h-[52px] items-center gap-3 px-3 sm:px-4">
-          <button
-            type="button"
-            onClick={() => setMobileOpen((o) => !o)}
-            className="rounded-md p-1.5 text-ink hover:bg-slate-100 xl:hidden"
-            aria-label={mobileOpen ? "Close menu" : "Open menu"}
-            aria-expanded={mobileOpen}
-          >
-            {mobileOpen ? <X className="size-5" /> : <Menu className="size-5" />}
-          </button>
+    <TooltipProvider>
+      <div className="flex min-h-screen bg-background">
+        <a
+          href="#main"
+          className="sr-only z-[90] rounded-md bg-brand px-3 py-2 text-sm font-medium text-brand-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2"
+        >
+          Skip to content
+        </a>
+        <Sidebar rail={rail} canToggle={wide} onToggle={toggleCollapsed} />
 
-          <Link to="/dashboard" className="flex shrink-0 items-center gap-2.5" aria-label="AI HR Assistant home">
-            <BrandMark />
-            <span className="hidden text-[15px] font-bold tracking-tight text-navy sm:block">AI HR Assistant</span>
-          </Link>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 border-b border-border bg-surface/85 px-3 backdrop-blur-sm sm:gap-3 sm:px-6">
+            <button
+              type="button"
+              onClick={() => setDrawer(true)}
+              className="inline-flex size-9 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-accent md:hidden"
+              aria-label="Open navigation menu"
+            >
+              <Menu className="size-5" />
+            </button>
+            <span className="flex items-center gap-2 md:hidden" aria-hidden="true">
+              <BrandMark className="size-7 text-xs" />
+            </span>
 
-          <DesktopNav items={items} pathname={pathname} />
+            <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-1.5 text-sm md:flex">
+              {trail.map((t, i) => (
+                <span key={`${t}-${i}`} className="flex min-w-0 items-center gap-1.5">
+                  {i > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" aria-hidden="true" />}
+                  <span className={cn("truncate", i === trail.length - 1 ? "font-medium text-foreground" : "text-muted-foreground")} aria-current={i === trail.length - 1 ? "page" : undefined}>
+                    {t}
+                  </span>
+                </span>
+              ))}
+            </nav>
+            <span className="min-w-0 truncate text-sm font-semibold text-foreground md:hidden">{trail[trail.length - 1]}</span>
 
-          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
-            <RoleBadge role={role} />
-            <ProfileMenu />
-          </div>
+            <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPalette(true)}
+                aria-label="Search (Ctrl+K)"
+                className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-surface-muted/60 px-3 text-sm text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground sm:flex sm:w-56 lg:w-64"
+              >
+                <Search className="size-4" />
+                <span className="flex-1 text-left">Search…</span>
+                <kbd className="rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] font-medium">{isMac ? "⌘K" : "Ctrl K"}</kbd>
+              </button>
+              <Hint label="Search">
+                <button
+                  type="button"
+                  onClick={() => setPalette(true)}
+                  aria-label="Search"
+                  className="inline-flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:hidden"
+                >
+                  <Search className="size-[18px]" />
+                </button>
+              </Hint>
+              <NotificationBell />
+              <ThemeMenu />
+              <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
+              <ProfileMenu />
+            </div>
+          </header>
+
+          <main id="main" tabIndex={-1} className={cn("mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 outline-none sm:px-6 sm:py-6 lg:px-8", fullHeight && "flex min-h-0 flex-col")}>
+            <div key={pathname} className={cn("animate-page-in", fullHeight && "flex min-h-0 flex-1 flex-col")}>
+              {children}
+            </div>
+          </main>
         </div>
 
-        {mobileOpen && (
-          <nav aria-label="Mobile" className="max-h-[calc(100vh-52px)] overflow-y-auto border-t border-border bg-white px-3 py-2 shadow-md xl:hidden">
-            {items.map((item) => {
-              const active = isActivePath(pathname, item.path);
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium",
-                    active ? "bg-brand-light text-brand" : "text-slate-700 hover:bg-slate-50",
-                  )}
-                >
-                  <Icon className="size-4" />
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
-        )}
-      </header>
+        <Dialog open={drawer} onOpenChange={setDrawer}>
+          <DrawerContent side="left">
+            <DialogTitle className="sr-only">Navigation</DialogTitle>
+            <DialogDescription className="sr-only">Main navigation menu</DialogDescription>
+            <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+              <BrandMark />
+              <span className="text-[15px] font-semibold tracking-tight text-foreground">AI HR Assistant</span>
+              <CloseButton className="ml-auto" />
+            </div>
+            <SidebarNav onNavigate={() => setDrawer(false)} />
+          </DrawerContent>
+        </Dialog>
 
-      <main
-        className={cn(
-          "mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:p-6",
-          fullHeight && "flex min-h-0 flex-col",
-        )}
-      >
-        {children}
-      </main>
-    </div>
+        <CommandPalette open={palette} onOpenChange={setPalette} />
+      </div>
+    </TooltipProvider>
   );
 }
