@@ -9,6 +9,7 @@ GET /salary/me             — Get salary records for the authenticated employee
 GET /salary                — Payroll sheet for one month with employee names (HR / Admin).
 GET /salary/summary        — Get aggregated salary summary statistics (HR / Admin).
 POST /salary/generate      — Payroll engine: compute/update a month's salary rows (HR / Admin).
+POST /salary/mark-paid     — Mark salary rows as paid (locks them; irreversible) (HR / Admin).
 GET /salary/{employee_id}  — Get salary records for a specific employee (HR / Admin).
 """
 
@@ -250,6 +251,39 @@ def generate_payroll(
         )
     except PayrollPeriodError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# POST /salary/mark-paid
+# ---------------------------------------------------------------------------
+
+class MarkPaidRequest(BaseModel):
+    salary_ids: List[int] = Field(..., min_length=1, max_length=1000)
+
+
+class MarkPaidResponse(BaseModel):
+    marked: List[int]
+    already_paid: List[int]
+    not_found: List[int]
+    paid_at: datetime
+
+
+@router.post(
+    "/mark-paid",
+    response_model=MarkPaidResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Mark Salaries As Paid",
+    description=(
+        "Sets paid_at on the given unpaid salary rows. Paid rows are locked: payroll generation skips them "
+        "and attendance for that month can no longer be corrected. Irreversible. HR / Admin only."
+    ),
+)
+def mark_paid(
+    payload: MarkPaidRequest,
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    return salary_service.mark_paid(db, payload.salary_ids)
 
 
 # ---------------------------------------------------------------------------

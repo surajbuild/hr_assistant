@@ -17,8 +17,8 @@ or status codes) so that it can be safely invoked by both API routers and AI/too
 """
 
 import calendar
-from datetime import date
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from datetime import date, datetime
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy import distinct, func
 from sqlalchemy.orm import Session
@@ -34,6 +34,7 @@ from app.database.models import (
     Salary,
 )
 from app.services.attendance_service import STANDARD_WORKING_MINUTES, working_days_between
+from app.services.holiday_service import get_declared_holiday_dates
 
 # ---------------------------------------------------------------------------
 # Payroll rules (PROJECT_DECISIONS.md D-021 — the PRD is silent on formulas)
@@ -283,6 +284,38 @@ def list_payroll(
 
 
 # ---------------------------------------------------------------------------
+# Mark as paid (locks the row, D-021 / D-036)
+# ---------------------------------------------------------------------------
+
+def mark_paid(
+    db: Session,
+    salary_ids: Iterable[int],
+    paid_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Set paid_at on unpaid salary rows. Paid rows are locked: the payroll engine skips them and
+    attendance for that month can no longer be corrected. There is no "unpay" (D-036).
+
+    Returns {"marked": [ids], "already_paid": [ids], "not_found": [ids], "paid_at": datetime}.
+    """
+    ids = list(dict.fromkeys(int(i) for i in salary_ids))
+    paid_at = paid_at or datetime.now().replace(microsecond=0)
+    rows = {s.id: s for s in db.query(Salary).filter(Salary.id.in_(ids or [-1])).all()}
+    marked, already_paid, not_found = [], [], []
+    for sid in ids:
+        row = rows.get(sid)
+        if row is None:
+            not_found.append(sid)
+        elif row.paid_at is not None:
+            already_paid.append(sid)
+        else:
+            row.paid_at = paid_at
+            marked.append(sid)
+    db.commit()
+    return {"marked": marked, "already_paid": already_paid, "not_found": not_found, "paid_at": paid_at}
+
+
+# ---------------------------------------------------------------------------
 # Payroll Engine (D-021)
 # ---------------------------------------------------------------------------
 
@@ -311,10 +344,12 @@ def get_monthly_gross(db: Session, employee: Employee) -> Optional[float]:
     return float(latest.gross_salary) if latest else None
 
 
-def overtime_hourly_rate(monthly_gross: float, month: int, year: int) -> float:
-    """Overtime pay per hour = gross / (working days x 8 h) x 1.5."""
+def overtime_hourly_rate(
+    monthly_gross: float, month: int, year: int, extra_holidays: Optional[Set[date]] = None
+) -> float:
+    """Overtime pay per hour = gross / (working days x 8 h) x 1.5 (pass declared holidays as `extra_holidays`)."""
     first, last = month_bounds(month, year)
-    working_days = len(working_days_between(first, last)) or 1
+    working_days = len(working_days_between(first, last, extra_holidays)) or 1
     return monthly_gross / (working_days * HOURS_PER_WORKING_DAY) * OVERTIME_MULTIPLIER
 
 
@@ -324,7 +359,7 @@ def calculate_payroll(db: Session, employee: Employee, month: int, year: int) ->
 
     Returns None when the employee has no salary structure.
 
-        working_days    = Mon-Fri minus company holidays
+        working_days    = Mon-Fri minus national + declared company holidays (D-034)
         per_day         = gross / working_days
         LOP days        = absent days + 0.5 x half days + approved unpaid-leave working days
                           not already marked absent / half day (days without any attendance
@@ -339,7 +374,8 @@ def calculate_payroll(db: Session, employee: Employee, month: int, year: int) ->
     if gross is None:
         return None
     first, last = month_bounds(month, year)
-    working = working_days_between(first, last)
+    holidays = get_declared_holiday_dates(db, first, last)
+    working = working_days_between(first, last, holidays)
     working_set = set(working)
     working_days = len(working)
 
@@ -374,7 +410,7 @@ def calculate_payroll(db: Session, employee: Employee, month: int, year: int) ->
         .all()
     )
     for lv in unpaid_leaves:
-        for day in working_days_between(max(lv.from_date, first), min(lv.to_date, last)):
+        for day in working_days_between(max(lv.from_date, first), min(lv.to_date, last), holidays):
             rec = by_day.get(day)
             if rec is None or rec.status not in (AttendanceStatus.ABSENT.value, AttendanceStatus.HALF_DAY.value):
                 unpaid_days += 1
@@ -385,7 +421,7 @@ def calculate_payroll(db: Session, employee: Employee, month: int, year: int) ->
     paid_days = working_days - lop_days
     earned_basic = gross * BASIC_SHARE_OF_GROSS * (paid_days / working_days if working_days else 0)
     pf = _money(earned_basic * PF_RATE_OF_BASIC)
-    overtime_amount = _money(overtime_minutes / 60 * overtime_hourly_rate(gross, month, year))
+    overtime_amount = _money(overtime_minutes / 60 * overtime_hourly_rate(gross, month, year, holidays))
     net = _money(gross + overtime_amount - pf - lop_deduction)
 
     return {
@@ -489,7 +525,7 @@ def generate_payroll(
     return {
         "month": month,
         "year": year,
-        "working_days": len(working_days_between(first, last)),
+        "working_days": len(working_days_between(first, last, get_declared_holiday_dates(db, first, last))),
         "provisional": provisional,
         "created": created,
         "updated": updated,

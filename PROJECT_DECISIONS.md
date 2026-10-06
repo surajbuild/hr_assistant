@@ -286,7 +286,7 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
 - **Reason:** accessibility-critical behaviour (focus trapping, roving focus, ARIA) should not be hand-rolled.
 - **Impact:** +5 small packages; production bundle ≈ 923 KB minified (was ≈ 898 KB; KI-006 code-splitting still open).
 
-### D-028 — Temporary "legacy bridge" for dark mode on not-yet-redesigned pages
+### D-028 — Temporary "legacy bridge" for dark mode on not-yet-redesigned pages — COMPLETED (bridge deleted 2026-10-06, D-040)
 - **Date:** 2026-10-05
 - **Decision:** While Part 2 is pending, `globals.css` re-points Tailwind's raw palette variables (`--color-white`, `slate-*`,
   `emerald-50`, …) at design tokens under `.dark`, and keeps the old aliases (`navy`, `ink`, `page`, `brand-light`) mapped to tokens,
@@ -337,3 +337,101 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
 - **Alternatives:** Team-scoped rankings for managers — not done: it would change the existing HR/Admin-only ranking rule, which
   needs the product owner (AGENTS.md §8). Open question, see KI-029.
 - **Impact:** `tests/test_question_bank.py` (PRD §30 bank, 70 checks) guards all of the above.
+
+### D-031 — Signing secrets are mandatory; rate limiting on login and chat (KI-003, KI-011)
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** `app/utils/security.load_secret()` refuses to start the app when `JWT_SECRET_KEY` or `SESSION_SECRET_KEY` is
+  missing, shorter than 32 bytes, or still an `.env.example` placeholder. The `"default-session-secret-key"` fallback in
+  `app/main.py` is gone. `app/utils/rate_limit.py` adds in-memory sliding-window limits (no new dependency):
+  every `POST /auth/login` per client IP (30/min), failed logins per (IP, email) (5 per 15 min, cleared by a success), and
+  `POST /chat` per user (20/min, checked before any work so a flood never reaches the LLM or `chat_logs`). Over the limit →
+  429 with `Retry-After`; values via `RATE_LIMIT_*` env vars. The client IP comes from `X-Forwarded-For` only when the direct
+  peer is in `TRUSTED_PROXY_IPS` (IPs/CIDRs, default loopback); the Bun proxy overwrites that header with the real address.
+- **Reason:** owner-approved P2 security hardening (session 5 "do all the tasks"). Login brute force and LLM cost abuse were
+  unbounded; the 12-byte dev secret triggered PyJWT warnings.
+- **Alternatives:** `slowapi`/Redis — heavier, a new dependency; unnecessary for a single-process deployment.
+- **Impact:** state is per process → run one uvicorn worker (Docker does). Multi-worker needs a shared store (KI-031). Test
+  files reset the chat limiter through `tests/helpers.TrackingClient` (`reset_chat_rate_limit=False` in the limiter's own test).
+  Rotating `JWT_SECRET_KEY` logs everyone out (done once for the dev `.env` in session 5).
+
+### D-032 — Managers get attendance rankings for their own team in chat (KI-029, confirmed by the product owner)
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** "Who was late / absent / did overtime the most?" — HR/Admin company-wide (unchanged); **managers: ranking over
+  themselves + direct reports** (`get_scope_employee_ids`, the same scope as `GET /attendance/records`); employees refused.
+  The context says "limited to you and your direct reports". Salary rankings stay HR/Admin-only.
+- **Reason:** product owner answered "Yes, team-scoped" (2026-10-06). Managers can already see each report's attendance.
+- **Impact:** `tests/test_question_bank.py` C14 (no out-of-team names in the context) and D14 (numbers match a scoped SQL ranking).
+
+### D-033 — Attendance corrections: request → approve, plus HR direct edit (KI-012, confirmed by the product owner)
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** table `attendance_corrections` + `app/services/correction_service.py`.
+  - Any employee requests in/out times for one of their **past** days with a reason (`POST /attendance/corrections`); one
+    pending request per day; status is derived on approval with the check-out rules (D-007: < 4 h → half day; late after the
+    grace period; OT beyond 480 min).
+  - Reviewers: the employee's manager (direct reports only) or HR/Admin. **Nobody reviews their own request** (same principle
+    as D-022); the review queue excludes the caller's own requests. Approval creates or updates the attendance row.
+  - HR/Admin may edit any record directly (`PUT /attendance/records/{id}`), **but not their own** (they file a request).
+  - Both are refused (409) when that month's salary row of the employee is paid (D-036): paid payroll must not silently
+    disagree with attendance.
+- **Reason:** product owner chose "Request → approve" (2026-10-06); the reference HRMS has a request → approve flow.
+- **Alternatives:** HR-only edit (rejected by the owner); editing absent/leave statuses through requests (leave has its own
+  module, so requests only carry worked-day times).
+- **Impact:** approval does not regenerate payroll automatically — HR re-runs generation for unpaid months.
+
+### D-034 — Holiday calendar: national holidays in code + HR-declared company holidays in a table
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** the 3 fixed national holidays stay in `attendance_service.COMPANY_HOLIDAYS` (recur yearly, cannot be removed).
+  HR/Admin declare one-off company holidays in table `holidays` (`GET/POST/DELETE /holidays`; weekends and national dates are
+  rejected). Declared holidays are excluded from payroll working days (`salary_service`), from leave-day counting
+  (`leave_service.count_leave_days(..., holidays=)` — so leave balances no longer charge national **or** declared holidays,
+  extending D-008), from the OT hourly rate in reports, and are marked `holiday` by the demo generator. The chat answers
+  holiday-calendar questions from this data (also when a document matched first).
+- **Reason:** DEVELOPMENT_PLAN P2 "Holidays calendar (table + UI)"; the reference HRMS keeps holidays in the Leave module.
+- **Impact:** deleting a holiday does not recalculate payroll already generated; re-run generation for unpaid months.
+
+### D-035 — List pagination convention: `limit`/`offset` + `X-Total-Count`
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** `GET /employees` (optional `limit`), `GET /attendance/records` (default 1000 as before) and `GET /chat/logs`
+  (+ `search` on question/email) accept `limit`/`offset`; the response stays a plain JSON array and the total is in the
+  `X-Total-Count` header (`app/utils/pagination.py`; frontend `api.getPage<T>()` → `{items,total}`).
+- **Reason:** keeps every existing client working (no envelope change) while letting the UI page on the server.
+
+### D-036 — "Mark as paid" for salary rows is irreversible
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** `POST /salary/mark-paid {salary_ids}` (HR/Admin) sets `paid_at` on unpaid rows; already-paid / unknown ids are
+  reported, not errors. There is no "unpay" in the API or UI: a paid row is locked for the payroll engine (D-021) and for
+  attendance corrections (D-033). HR may mark any row including their own — it is bookkeeping, not an approval of a request.
+- **Reason:** DEVELOPMENT_PLAN P2; the engine already honoured `paid_at`.
+- **Alternatives:** admin-only unpay — not requested; a correction after payment should be a new adjustment, not an edit.
+
+### D-037 — Redesign Part 2 started on the product owner's go-ahead
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** the owner asked to "go ahead and do all the tasks", which included Part 2 of the redesign; this is recorded as
+  approval of the Part 1 direction (the D-026 checkpoint). No design feedback was given, so tokens/components are unchanged.
+
+### D-038 — Unrecorded working days stay paid (KI-023, confirmed by the product owner)
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** the D-021 rule stands: a working day without any attendance record is **not** loss of pay; only recorded
+  absences, half days and approved unpaid leave reduce pay. The owner chose "Keep paid".
+- **Reason:** attendance capture is not complete enough (no biometric sync) to treat a missing record as an absence.
+
+### D-039 — Chat profile lookups follow `GET /employees/{id}` (confirmed by the product owner)
+- **Date:** 2026-10-06 (session 5)
+- **Decision:** asking the chat about another person's profile ("Who is Rahul?", "What is Sneha's department?") is allowed for
+  HR/Admin (everyone), managers (direct reports only) and refused for employees — exactly the REST rule. The refusal comes from
+  `guardrails.check_rbac_access` before the LLM is called. Previously `check_rbac_access` allowed every profile lookup
+  ("general employee profile lookups"), so the chat exposed code, department, designation, joining date, status and manager
+  that REST refused. Found by the documentation pass; owner chose "Match REST".
+- **Also:** `POST /attendance` (HR/Admin create) now refuses the caller's own employee id (403), in line with D-033.
+- **Impact:** `tests/test_question_bank.py` C15–C18.
+
+### D-040 — Redesign finished: legacy bridge removed, solid-success token added
+- **Date:** 2026-10-06 (end of session 5, completed after a power cut interrupted the session)
+- **Decision:** With all 13 pages on design system v2 and no component using raw palette classes, the D-028 bridge
+  (`@layer base .dark { --color-white … }`) and the legacy aliases (`--color-page/ink/ink-muted/navy/navy-dark/brand-light`,
+  `--legacy-navy`) were deleted from `globals.css`. A new token `--status-present-solid` (`#047857` light, `#34d399` dark) is used
+  by the `success` button variant.
+- **Reason:** the bridge was temporary by design. axe found white text on `#059669` (Approve / check-in buttons) at 3.76:1 in light
+  mode; darkening `--status-present` itself would have shifted every badge, chart and calendar, which share that colour (D-026).
+- **Verification:** `ui_qa.py` 0 issues (4 roles × 1440/1024/390); axe WCAG 2.1 A/AA 0 violations on 22 page views in light and in
+  dark; server pagination verified in the browser (KI-028); `tsc` + `bun run build` clean.

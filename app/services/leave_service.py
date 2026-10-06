@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Set
 from sqlalchemy.orm import Session
 
 from app.database.models import Employee, Leave, LeaveStatus, LeaveType
+from app.services.attendance_service import is_working_day
+from app.services.holiday_service import get_declared_holiday_dates
 
 # Annual entitlements per calendar year — mirrors app/data/policies.json (leave_policy).
 LEAVE_ENTITLEMENTS: Dict[str, int] = {
@@ -237,10 +239,17 @@ def cancel_leave(db: Session, *, leave_id: int, employee_id: int) -> Leave:
 # Calculations (leave days & balances)
 # ---------------------------------------------------------------------------
 
-def count_leave_days(from_date: date, to_date: date, year: Optional[int] = None) -> int:
+def count_leave_days(
+    from_date: date,
+    to_date: date,
+    year: Optional[int] = None,
+    holidays: Optional[Set[date]] = None,
+) -> int:
     """
-    Number of working days (Mon–Fri) covered by a leave, optionally clipped to one
-    calendar year. Weekends are not charged against leave balances (D-008).
+    Number of working days covered by a leave, optionally clipped to one calendar year.
+    Weekends (D-008) and holidays — national ones always, declared company holidays when
+    passed as `holidays` (holiday_service.get_declared_holiday_dates, D-034) — are not
+    charged against leave balances.
     """
     start, end = from_date, to_date
     if year is not None:
@@ -249,7 +258,7 @@ def count_leave_days(from_date: date, to_date: date, year: Optional[int] = None)
     days = 0
     current = start
     while current <= end:
-        if current.weekday() < 5:
+        if is_working_day(current, holidays):
             days += 1
         current += timedelta(days=1)
     return days
@@ -264,6 +273,7 @@ def get_leave_balance(db: Session, employee_id: int, year: Optional[int] = None)
     remaining = entitled - used (never below 0)
     """
     year = year or date.today().year
+    holidays = get_declared_holiday_dates(db, date(year, 1, 1), date(year, 12, 31))
     leaves = (
         db.query(Leave)
         .filter(
@@ -276,12 +286,12 @@ def get_leave_balance(db: Session, employee_id: int, year: Optional[int] = None)
     balance = []
     for leave_type, entitled in LEAVE_ENTITLEMENTS.items():
         used = sum(
-            count_leave_days(lv.from_date, lv.to_date, year)
+            count_leave_days(lv.from_date, lv.to_date, year, holidays)
             for lv in leaves
             if lv.leave_type == leave_type and lv.status == LeaveStatus.APPROVED.value
         )
         pending = sum(
-            count_leave_days(lv.from_date, lv.to_date, year)
+            count_leave_days(lv.from_date, lv.to_date, year, holidays)
             for lv in leaves
             if lv.leave_type == leave_type and lv.status == LeaveStatus.PENDING.value
         )
@@ -316,6 +326,7 @@ def list_leaves(
     if employee_id is not None:
         query = query.filter(Leave.employee_id == employee_id)
     rows = query.order_by(Leave.applied_at.desc(), Leave.id.desc()).all()
+    holidays = get_declared_holiday_dates(db)
     return [
         {
             "id": lv.id,
@@ -326,7 +337,7 @@ def list_leaves(
             "leave_type": lv.leave_type,
             "from_date": lv.from_date,
             "to_date": lv.to_date,
-            "days": count_leave_days(lv.from_date, lv.to_date),
+            "days": count_leave_days(lv.from_date, lv.to_date, holidays=holidays),
             "status": lv.status,
             "reason": lv.reason,
             "applied_at": lv.applied_at,

@@ -8,8 +8,8 @@ framework dependencies (e.g. LangChain).
 
 Configuration via environment variables:
 - LLM_API_KEY: Provider authentication key.
-- LLM_MODEL: Model name (default: "gpt-4o-mini").
-- LLM_BASE_URL: Provider base endpoint (default: "https://api.openai.com/v1").
+- LLM_MODEL: Model name (default: "openai/gpt-4o-mini", the OpenRouter id).
+- LLM_BASE_URL: Provider base endpoint (default: "https://openrouter.ai/api/v1").
 - LLM_TIMEOUT: Request timeout in seconds (default: 30.0).
 """
 

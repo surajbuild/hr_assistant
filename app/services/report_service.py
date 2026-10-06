@@ -409,8 +409,10 @@ def overtime_amount_for_records(db, records):
     (salary_service.overtime_hourly_rate — the same rate the payroll engine uses).
     Employees without a salary structure get None.
     """
+    from app.services.holiday_service import get_declared_holiday_dates
     from app.services.salary_service import get_monthly_gross, overtime_hourly_rate
 
+    holidays = get_declared_holiday_dates(db)
     gross_cache, amounts = {}, {}
     for att, emp in records:
         if emp.id not in gross_cache:
@@ -419,7 +421,7 @@ def overtime_amount_for_records(db, records):
         if gross is None:
             amounts.setdefault(emp.id, None)
             continue
-        rate = overtime_hourly_rate(gross, att.attendance_date.month, att.attendance_date.year)
+        rate = overtime_hourly_rate(gross, att.attendance_date.month, att.attendance_date.year, holidays)
         amounts[emp.id] = (amounts.get(emp.id) or 0.0) + (att.overtime_minutes or 0) / 60.0 * rate
     return {emp_id: (round(v, 2) if v is not None else None) for emp_id, v in amounts.items()}
 
@@ -471,7 +473,10 @@ def generate_leave_report(
     Leave report (PRD §22): Employee, Leave Type, Leave Days, Status (+ dates, reason).
     A leave is included when it overlaps the requested period.
     """
+    from app.services.holiday_service import get_declared_holiday_dates
     from app.services.leave_service import count_leave_days
+
+    holidays = get_declared_holiday_dates(db)
 
     query = db.query(Leave, Employee).join(Employee, Leave.employee_id == Employee.id)
     if date_from:
@@ -498,7 +503,7 @@ def generate_leave_report(
             lv.leave_type.replace("_", " ").title(),
             str(lv.from_date),
             str(lv.to_date),
-            count_leave_days(lv.from_date, lv.to_date),
+            count_leave_days(lv.from_date, lv.to_date, holidays=holidays),
             lv.status.title(),
             lv.reason or "",
         ]

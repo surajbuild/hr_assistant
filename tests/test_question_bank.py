@@ -3,10 +3,11 @@ tests/test_question_bank.py
 ---------------------------
 PRD §30 question bank — the AI assistant end to end through POST /chat:
 
-  [A] 22 normal questions        (employee / HR / manager / admin, every intent)
+  [A] 23 normal questions        (employee / HR / manager / admin, every intent, holiday calendar)
   [B] 11 incorrect questions     (unknown people, empty periods, off-topic, blank input)
-  [C] 13 permission / security   (prompt injection, other people's salary/attendance, directory, rankings)
-  [D] 13 calculation questions   (expected numbers computed independently from MySQL in this file)
+  [C] 18 permission / security   (prompt injection, other people's salary/attendance/profile, directory, rankings,
+                                  manager rankings and profiles limited to the team — D-032, D-039)
+  [D] 14 calculation questions   (expected numbers computed independently from MySQL in this file)
   [E] 11 RAG / document tests    (PDF with pages, DOCX, TXT upload → answer + source; archive; new version)
 
 Covers the PRD §35 demo questions ("What is my attendance this month?", "What is another employee's
@@ -171,11 +172,13 @@ def attendance_counts(emp_id: int, start: date, end: date) -> Dict[str, int]:
     return {k: int(getattr(row, k) or 0) for k in ("total", "present", "absent", "late", "ot")}
 
 
-def ranking(metric: str, start: Optional[date] = None, end: Optional[date] = None) -> List[Dict[str, Any]]:
-    """Rows ordered exactly as the ranking spec says (value desc, tie-break, name asc)."""
+def ranking(
+    metric: str, start: Optional[date] = None, end: Optional[date] = None, scope: Optional[set] = None
+) -> List[Dict[str, Any]]:
+    """Rows ordered exactly as the ranking spec says (value desc, tie-break, name asc); `scope` = employee ids."""
     where = "WHERE a.attendance_date BETWEEN :s AND :t" if start else ""
     rows = db.execute(text(
-        "SELECT e.name, e.employee_code, e.department, COALESCE(SUM(a.overtime_minutes), 0) AS ot, "
+        "SELECT e.id, e.name, e.employee_code, e.department, COALESCE(SUM(a.overtime_minutes), 0) AS ot, "
         "SUM(a.late_minutes > 0) AS late_days, COALESCE(SUM(a.late_minutes), 0) AS late_min, "
         "SUM(a.status = 'absent') AS absent_days "
         f"FROM attendance a JOIN employees e ON e.id = a.employee_id {where} GROUP BY e.id"
@@ -184,6 +187,7 @@ def ranking(metric: str, start: Optional[date] = None, end: Optional[date] = Non
         {"name": r.name, "code": r.employee_code, "dept": r.department, "ot": int(r.ot or 0),
          "late_days": int(r.late_days or 0), "late_min": int(r.late_min or 0), "absent": int(r.absent_days or 0)}
         for r in rows
+        if scope is None or r.id in scope
     ]
     key = {
         "overtime": lambda i: (-i["ot"], i["name"]),
@@ -335,6 +339,11 @@ try:
         return e
 
     aman, rahul, sneha = emp("EMP004"), emp("EMP005"), emp("EMP006")
+    manager_emp = db.query(User).filter(User.email == "priya.mgr@company.com").first().employee
+    manager_team = {manager_emp.id} | {
+        e.id for e in db.query(Employee).filter(Employee.manager_id == manager_emp.id).all()
+    }
+    outside_team_names = [e.name for e in db.query(Employee).filter(Employee.id.notin_(manager_team)).all()]
 
     # -----------------------------------------------------------------------
     run_section("[A] Normal questions", [
@@ -383,6 +392,9 @@ try:
          "confidence": "data_verified", "llm": True, "prompt_has": ["- Engineering:"]},
         {"id": "A22", "as": HR, "q": "What is Sneha's department?", "intent": "EMPLOYEE", "llm": True,
          "prompt_has": [f"Department: {sneha.department}"]},
+        # D-034: the holiday calendar comes from the HR system (national + declared holidays)
+        {"id": "A23", "as": EMP, "q": "What are the company holidays in 2026?", "intent": "POLICY", "llm": True,
+         "prompt_has": ["Company holiday calendar for 2026", "2026-08-15 (Saturday): Independence Day [national]"]},
     ])
 
     # -----------------------------------------------------------------------
@@ -425,6 +437,16 @@ try:
         denied("C11", MGR, "How many days was Sneha present in August 2024?", "attendance_database"),
         denied("C12", EMP, "Who worked the most overtime this month?", "attendance_database"),
         denied("C13", MGR, "Show another employee's salary.", "salary_database"),
+        # KI-029 / D-032: a manager's ranking covers only themself + direct reports
+        {"id": "C14", "as": MGR, "q": "Who was absent the most?", "intent": "ATTENDANCE", "llm": True,
+         "prompt_has": ["limited to you and your direct reports"],
+         "prompt_lacks": [n for n in outside_team_names if n]},
+        # D-039: another person's profile follows GET /employees/{id} (employee: self only; manager: team only)
+        denied("C15", EMP, "Who is Rahul?", "employee_database"),
+        denied("C16", EMP, "What is Sneha's designation?", "employee_database"),
+        denied("C17", MGR, "What is Sneha's department?", "employee_database"),
+        {"id": "C18", "as": MGR, "q": "What is Rahul's designation?", "intent": "EMPLOYEE", "llm": True,
+         "prompt_has": [f"Designation: {rahul.designation}"]},
     ])
 
     # -----------------------------------------------------------------------
@@ -434,8 +456,8 @@ try:
     aman_aug = attendance_counts(aman.id, *aug24)
     rahul_sep = attendance_counts(rahul.id, *sep24)
 
-    def top_line(metric: str, start=None, end=None) -> str:
-        ranked = ranking(metric, start, end)
+    def top_line(metric: str, start=None, end=None, scope=None) -> str:
+        ranked = ranking(metric, start, end, scope)
         if not ranked:
             label = {"overtime": "overtime", "late": "late arrivals", "absent": "absences"}[metric]
             return f"No {label} records found"
@@ -483,6 +505,8 @@ try:
         {"id": "D06", "as": EMP, "q": "What is my attendance this month?", "prompt_has": a01_expect},
         {"id": "D07", "as": HR, "q": "Who was late the most?", "prompt_has": [top_line("late")]},
         {"id": "D08", "as": HR, "q": "Who was absent the most?", "prompt_has": [top_line("absent")]},
+        {"id": "D14", "as": MGR, "q": "Who worked the most overtime in September 2024?",
+         "prompt_has": [top_line("overtime", *sep24, scope=manager_team)]},
         {"id": "D09", "as": HR, "q": "What is the total payroll for September 2024?",
          "prompt_has": [f"Total Gross Salary: ₹{float(payroll.gross or 0):,.2f}",
                         f"Total Net Salary: ₹{float(payroll.net or 0):,.2f}"]},

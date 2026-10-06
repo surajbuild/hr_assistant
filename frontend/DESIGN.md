@@ -39,8 +39,11 @@ Raw tokens are CSS variables on `:root` (light) and `.dark` (dark); `@theme inli
 | Login brand panel | `--brand-panel`(`-foreground`) | `#1e1b4b` | `#151538` |
 
 **Usage rules**
-- Use `bg-brand text-brand-foreground`, **never `text-white`** (in dark mode the legacy bridge remaps `white` to the surface
-  colour, and `brand-foreground` flips correctly). Text on a solid amber fill uses `text-[var(--on-late)]`.
+- Use `bg-brand text-brand-foreground`, **never `text-white`** (`brand-foreground` flips correctly in dark mode; raw palette
+  classes don't). Text on a solid amber fill uses `text-[var(--on-late)]`.
+- A **filled** success surface with text (the `success` button) uses `bg-status-present-solid text-brand-foreground`
+  (`#047857` light / `#34d399` dark): white on the plain present green `#059669` is only 3.8:1. Keep `status-present` for
+  dots, bars, rings, charts and calendars (no text on them).
 - Text sizes: `text-foreground` for content, `text-muted-foreground` for meta. Don't use opacity to dim text (fails AA).
 
 ### Status colours — one fixed colour per status
@@ -137,9 +140,10 @@ sheets on phones; KPI grids are 2 → 3 → 6 columns; dashboards stack to one c
 `ThemeProvider` (`lib/theme.tsx`): Light / Dark / **System (default)**, toggle in the top bar (and on Login), persisted in
 `localStorage` `hr_theme` (try/catch). An inline script in `index.html` sets `.dark` before first paint (no flash).
 Every token has a deliberate dark value; shadows deepen, status tints become translucent, brand lightens.
-**Legacy bridge** (`@layer base .dark {…}` in `globals.css`): re-points Tailwind's raw palette (`white`, `slate-*`,
-`emerald-50`…) at tokens so pages not yet redesigned stay readable. 🔧 **Delete it when Part 2 finishes** (no component should
-use raw palette colours any more).
+The temporary **legacy bridge** (D-028) and the legacy aliases (`navy`, `ink`, `page`, `brand-light`) were **deleted** on
+2026-10-06 when Part 2 finished: nothing remaps raw palette classes any more, so a `bg-white`/`slate-*` class in new code
+renders wrongly in dark mode. Check with `grep -rE "bg-white|text-white|slate-|emerald-|navy" src` (expect only `translate-*`
+false positives and the `StatCard` tone aliases).
 
 ## 8. Accessibility checklist (verify on every page)
 - AA contrast (axe-core `wcag2a/2aa/21aa` clean in light **and** dark); input borders ≥3:1.

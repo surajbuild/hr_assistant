@@ -1,6 +1,7 @@
-import os
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
+
+from app.utils.security import load_secret
 
 from app.api.auth import router as auth_router
 from app.api.employees import router as employees_router
@@ -13,6 +14,7 @@ from app.api.reports import router as reports_router
 from app.api.departments import router as departments_router
 from app.api.documents import router as documents_router
 from app.api.users import router as users_router
+from app.api.holidays import router as holidays_router
 
 app = FastAPI(
     title="AI HR Assistant",
@@ -21,7 +23,8 @@ app = FastAPI(
 )
 
 # ── Session Middleware (Required by Authlib for OAuth CSRF state/nonce) ───────
-SESSION_SECRET_KEY = os.getenv("SESSION_SECRET_KEY") or os.getenv("JWT_SECRET_KEY") or "default-session-secret-key"
+# No fallback: a missing / short secret stops the app at startup (KI-011).
+SESSION_SECRET_KEY = load_secret("SESSION_SECRET_KEY")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY)
 
 # ── Routers ──────────────────────────────────────────────────────────────────
@@ -36,6 +39,7 @@ app.include_router(reports_router)
 app.include_router(departments_router)
 app.include_router(documents_router)
 app.include_router(users_router)
+app.include_router(holidays_router)
 
 
 @app.get("/", tags=["Health"])

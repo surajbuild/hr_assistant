@@ -12,20 +12,26 @@ GET /attendance/today         — Today's record for the authenticated employee 
 POST /attendance/check-in      — Self-service check-in (late after 9:15).
 POST /attendance/check-out     — Self-service check-out (server computes working/OT minutes).
 GET /attendance/daily          — Daily sheet for all in-scope employees (HR / Admin / Manager-team).
-GET /attendance/records        — Filtered record search (HR / Admin / Manager-team).
+GET /attendance/records        — Filtered record search (HR / Admin / Manager-team), paginated (X-Total-Count).
+PUT /attendance/records/{id}   — Edit one record (HR / Admin; not own record; not in a paid month) (D-033).
+POST /attendance/corrections   — Request a correction of one of your own days.
+GET /attendance/corrections/me — Your correction requests.
+GET /attendance/corrections    — Requests to review (HR / Admin all; Manager team; own excluded).
+POST /attendance/corrections/{id}/approve | /reject — Review (never your own; manager → team only).
+POST /attendance/corrections/{id}/cancel           — Withdraw your pending request.
 GET /attendance/{employee_id}  — Get attendance records for a specific employee (HR / Admin).
 """
 
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import AttendanceStatus, User
-from app.services import attendance_service, employee_service
+from app.database.models import AttendanceStatus, CorrectionStatus, User
+from app.services import attendance_service, correction_service, employee_service
 from app.services.attendance_service import (
     CheckInError,
     DuplicateAttendanceError,
@@ -33,6 +39,7 @@ from app.services.attendance_service import (
     InvalidDateRangeError,
 )
 from app.utils.dependencies import get_current_user, require_role
+from app.utils.pagination import set_total_count
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
@@ -135,7 +142,14 @@ def create_attendance(
     1. Verify current user has 'hr' or 'admin' role (enforced by dependency).
     2. Delegate creation, validation, and persistence to attendance_service.
     3. Catch domain exceptions and map to appropriate HTTP status codes.
+
+    Not for your own attendance (D-033): HR/Admin use check-in/out or a correction request like everyone else.
     """
+    if body.employee_id == current_user.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot create your own attendance record. Use check-in/out or request a correction.",
+        )
     try:
         return attendance_service.create_attendance(
             db,
@@ -336,13 +350,19 @@ def get_daily_attendance(
     response_model=List[AttendanceRecordRow],
     status_code=status.HTTP_200_OK,
     summary="Search Attendance Records",
-    description="Filtered attendance records. Managers are limited to their team.",
+    description=(
+        "Filtered attendance records, newest first. Managers are limited to their team. "
+        "Paginated with `limit` / `offset`; the total is returned in the `X-Total-Count` header."
+    ),
 )
 def list_attendance_records(
+    response: Response,
     employee_id: Optional[int] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     status_filter: Optional[AttendanceStatus] = Query(None, alias="status"),
+    limit: int = Query(1000, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_role("hr", "admin", "manager")),
     db: Session = Depends(get_db),
 ):
@@ -353,16 +373,232 @@ def list_attendance_records(
             detail="You do not have permission to perform this action.",
         )
     try:
-        return attendance_service.list_attendance_records(
+        page = attendance_service.list_attendance_records(
             db,
             scope_ids=scope,
             employee_id=employee_id,
             start_date=from_date,
             end_date=to_date,
             status=status_filter.value if status_filter else None,
+            limit=limit,
+            offset=offset,
+            with_total=True,
         )
     except InvalidDateRangeError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    set_total_count(response, page["total"])
+    return page["items"]
+
+
+# ---------------------------------------------------------------------------
+# PUT /attendance/records/{record_id}  (HR / Admin direct edit, D-033)
+# ---------------------------------------------------------------------------
+
+class AttendanceUpdateRequest(BaseModel):
+    status: AttendanceStatus
+    in_time: Optional[time] = None
+    out_time: Optional[time] = None
+
+
+@router.put(
+    "/records/{record_id}",
+    response_model=AttendanceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Edit Attendance Record",
+    description=(
+        "HR / Admin. Worked days (present / half day) need in and out time; status and minutes are "
+        "computed by the server. Not allowed on your own record or in a month whose salary is paid."
+    ),
+)
+def update_attendance_record(
+    record_id: int,
+    body: AttendanceUpdateRequest,
+    current_user: User = Depends(require_role("hr", "admin")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return correction_service.update_attendance_record(
+            db, record_id, current_user, status=body.status.value, in_time=body.in_time, out_time=body.out_time
+        )
+    except correction_service.CorrectionServiceError as exc:
+        raise _correction_http_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Attendance correction requests (D-033)
+# ---------------------------------------------------------------------------
+
+class CorrectionCreateRequest(BaseModel):
+    attendance_date: date
+    in_time: time
+    out_time: time
+    reason: str = Field(..., min_length=1, max_length=1000)
+
+
+class CorrectionReviewRequest(BaseModel):
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class CorrectionItem(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: str
+    employee_code: str
+    department: str
+    attendance_date: date
+    requested_in_time: time
+    requested_out_time: time
+    reason: str
+    status: str
+    requested_at: datetime
+    reviewed_by_name: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
+    current_status: Optional[str] = None
+    current_in_time: Optional[time] = None
+    current_out_time: Optional[time] = None
+
+
+def _correction_http_error(exc: Exception) -> HTTPException:
+    codes = [
+        (correction_service.CorrectionNotFoundError, status.HTTP_404_NOT_FOUND),
+        (correction_service.InvalidCorrectionError, status.HTTP_422_UNPROCESSABLE_ENTITY),
+        (correction_service.CorrectionConflictError, status.HTTP_409_CONFLICT),
+        (correction_service.CorrectionLockedError, status.HTTP_409_CONFLICT),
+        (correction_service.SelfReviewError, status.HTTP_403_FORBIDDEN),
+        (correction_service.CorrectionPermissionError, status.HTTP_403_FORBIDDEN),
+    ]
+    for cls, code in codes:
+        if isinstance(exc, cls):
+            return HTTPException(status_code=code, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def _one_correction(db: Session, correction_id: int) -> dict:
+    return correction_service.list_corrections(db, correction_id=correction_id)[0]
+
+
+@router.post(
+    "/corrections",
+    response_model=CorrectionItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Request Attendance Correction",
+    description="Ask your manager / HR to set the in and out time of one of your days.",
+)
+def create_correction(
+    body: CorrectionCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    employee_id = _require_employee(current_user)
+    try:
+        correction = correction_service.create_correction(
+            db,
+            employee_id=employee_id,
+            attendance_date=body.attendance_date,
+            in_time=body.in_time,
+            out_time=body.out_time,
+            reason=body.reason,
+        )
+    except correction_service.CorrectionServiceError as exc:
+        raise _correction_http_error(exc)
+    return _one_correction(db, correction.id)
+
+
+@router.get(
+    "/corrections/me",
+    response_model=List[CorrectionItem],
+    status_code=status.HTTP_200_OK,
+    summary="My Correction Requests",
+)
+def my_corrections(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    employee_id = _require_employee(current_user)
+    return correction_service.list_corrections(db, employee_id=employee_id)
+
+
+@router.get(
+    "/corrections",
+    response_model=List[CorrectionItem],
+    status_code=status.HTTP_200_OK,
+    summary="Correction Requests To Review",
+    description="HR / Admin: everyone's; Manager: direct reports'. Your own requests are not listed here.",
+)
+def list_corrections(
+    status_filter: Optional[CorrectionStatus] = Query(None, alias="status"),
+    current_user: User = Depends(require_role("hr", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    scope = employee_service.get_scope_employee_ids(db, current_user)
+    return correction_service.list_corrections(
+        db,
+        scope_ids=scope,
+        exclude_employee_id=current_user.employee_id,
+        status=status_filter.value if status_filter else None,
+    )
+
+
+def _review(correction_id: int, approve: bool, body: Optional[CorrectionReviewRequest], current_user: User, db: Session):
+    scope = employee_service.get_scope_employee_ids(db, current_user)
+    try:
+        correction_service.review_correction(
+            db, correction_id, current_user, approve=approve, note=body.note if body else None, scope_ids=scope
+        )
+    except correction_service.CorrectionServiceError as exc:
+        raise _correction_http_error(exc)
+    return _one_correction(db, correction_id)
+
+
+@router.post(
+    "/corrections/{correction_id}/approve",
+    response_model=CorrectionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Approve Correction",
+    description="Applies the requested times to the attendance record (manager → team only; never your own).",
+)
+def approve_correction(
+    correction_id: int,
+    body: Optional[CorrectionReviewRequest] = None,
+    current_user: User = Depends(require_role("hr", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    return _review(correction_id, True, body, current_user, db)
+
+
+@router.post(
+    "/corrections/{correction_id}/reject",
+    response_model=CorrectionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Reject Correction",
+)
+def reject_correction(
+    correction_id: int,
+    body: Optional[CorrectionReviewRequest] = None,
+    current_user: User = Depends(require_role("hr", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    return _review(correction_id, False, body, current_user, db)
+
+
+@router.post(
+    "/corrections/{correction_id}/cancel",
+    response_model=CorrectionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel My Correction Request",
+)
+def cancel_correction(
+    correction_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    employee_id = _require_employee(current_user)
+    try:
+        correction_service.cancel_correction(db, correction_id, employee_id)
+    except correction_service.CorrectionServiceError as exc:
+        raise _correction_http_error(exc)
+    return _one_correction(db, correction_id)
 
 
 # ---------------------------------------------------------------------------

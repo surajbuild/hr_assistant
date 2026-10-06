@@ -9,8 +9,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, ApiError, getToken, setToken as persistToken } from "./api";
 import type { CurrentUser, LoginResponse, Role } from "./types";
 
-/** Google OAuth must hit the backend directly (redirect flow), not the /api proxy. */
-export const GOOGLE_LOGIN_URL = "http://localhost:8000/auth/google/login?next=frontend";
+/**
+ * Google OAuth goes through the same-origin /api proxy (a full-page navigation, not fetch): the proxy passes the
+ * backend's 302 to Google and its session cookie through unchanged, so this works wherever the SPA is served —
+ * including Docker, where the backend port is not published. GOOGLE_REDIRECT_URI may point at the backend directly
+ * (local dev) or at `<frontend>/api/auth/google/callback` (deployments).
+ */
+export const GOOGLE_LOGIN_URL = "/api/auth/google/login?next=frontend";
 
 interface AuthContextValue {
   token: string | null;

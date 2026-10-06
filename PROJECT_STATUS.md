@@ -1,6 +1,7 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-06, session 4** (PRD §30 question bank + AI router fixes; redesign Part 1 still awaiting owner approval)
+Last updated: **2026-10-06, session 5** (security hardening, attendance corrections, holidays, mark-paid, pagination, Docker,
+PRD §33 docs, redesign Part 2 — completed and verified after a power cut interrupted the session's final steps)
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
 
@@ -10,22 +11,24 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 
 | Feature | Status | Notes |
 |---|---|---|
-| Project setup (FastAPI, MySQL, Alembic) | ✅ | Alembic head `e5f6a7b8c9d0` |
-| Authentication (email/password, JWT) | ✅ | bcrypt, generic errors, inactive → 403 |
-| Google OAuth | ⚠️ | Backend + tests; SPA `#token=` hand-off verified in browser; real Google round-trip not tried (KI-004) |
+| Project setup (FastAPI, MySQL, Alembic) | ✅ | Alembic head `f6a7b8c9d0e1` (holidays + attendance_corrections) |
+| Authentication (email/password, JWT) | ✅ | bcrypt, generic errors, inactive → 403; secrets ≥ 32 bytes enforced at startup (D-031) |
+| Rate limiting (`/auth/login`, `/chat`) | ✅ | In-memory, 429 + `Retry-After` (D-031; one worker, KI-031) |
+| Google OAuth | ⚠️ | Backend + tests; starts through the `/api` proxy; real Google round-trip not tried (KI-004); auto-provisioning needs an owner decision (KI-033) |
 | RBAC + manager team scope | ✅ | `get_scope_employee_ids`; manager = self + direct reports (D-010) |
 | Self-approval of leave | ✅ | Blocked for every role incl. HR/Admin — product-owner decision D-022; UI explains it |
 | Employee management (CRUD, soft delete) | ✅ | + `monthly_gross_salary` (confidential, D-021) |
 | Departments | ✅ | Derived from employees (D-005) |
 | Attendance: records, summary, HR create, check-in/out, daily sheet, search | ✅ | Rules D-007; holidays `COMPANY_HOLIDAYS` |
-| Attendance: edit / correction workflow | 🔴 | KI-012 |
+| Attendance: edit / correction workflow | ✅ | Request → approve (manager/HR, never self) + HR direct edit; paid months locked (D-033) |
 | Leave: apply, balance, cancel, approvals | ✅ | Working-day counting (D-008) |
-| Holidays calendar UI | 🔴 | Fixed national holidays only (code constant) |
+| Holidays calendar | ✅ | National (code) + HR-declared (table); Leave → Holidays tab; excluded from payroll/leave counts (D-034) |
 | Payroll register + payslips | ✅ | |
 | **Payroll engine** (`POST /salary/generate`, UI dialog) | ✅ | LOP / PF / OT pay, idempotent, paid rows locked (D-021) |
-| "Mark as paid" action | 🔴 | P2 |
+| "Mark as paid" action | ✅ | `POST /salary/mark-paid`, irreversible, locks the month (D-036) |
+| List pagination | ✅ | `/employees`, `/attendance/records`, `/chat/logs` — `limit`/`offset` + `X-Total-Count` (D-035); browser-verified |
 | Document upload + RAG indexing | ✅ | PDF (page-aware), DOCX, TXT; versioning; archive |
-| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent), department headcount, company payroll summary, "this month"/month-only periods (D-029, D-030) |
+| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent; managers team-scoped, D-032), department headcount, company payroll summary, holidays, "this month"/month-only periods (D-029, D-030); profile lookups follow REST (D-039) |
 | PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 22 normal / 11 incorrect / 13 security / 13 calculation / 11 RAG (70 checks) |
 | AI chat: policy Q&A via RAG with sources | ✅ | D-009 |
 | Prompt-injection protection | ✅ | D-011 |
@@ -33,11 +36,11 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard (HR summary + trend, personal `/dashboard/me`) | ✅ | Live current-month demo data via `generate_demo_month.py` |
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
-| Frontend: 13 pages | ✅ | Functionally complete, browser-verified (D-020). **Redesign (D-026) in progress:** Part 1 ✅ done — design system v2, sidebar shell, dark mode, ⌘K palette, Login/Dashboard/Employees redesigned; ⏸ **awaiting owner approval of the direction**; Part 2 🔴 (other 10 pages + quality pass) — `frontend/REDESIGN_NOTES.md` |
-| Automated tests | ✅ | 35 files, 769 checks, all passing; dev DB unchanged by a run (D-023) |
+| Frontend: 13 pages | ✅ | **Redesign complete** (D-026, D-037, D-040): all 13 pages on design system v2, light + dark; legacy bridge deleted; `ui_qa.py` 0 issues, axe 0 violations in both themes |
+| Automated tests | ✅ | 37 files, 882 checks, all passing; dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
-| README / docs | ✅ | |
-| Deployment | 🔴 | P2 (Docker compose) |
+| README / docs | ✅ | + `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md` (PRD §33) |
+| Deployment | 🟡 | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; **image build not yet run** (Docker daemon not running on the dev machine) |
 | Out-of-PRD reference modules | 🔴 | P3 by decision D-002 |
 
 ## 2. PRD acceptance criteria (§36)
@@ -63,11 +66,16 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard works | ✅ (browser-verified with live data) |
 | Automated tests exist | ✅ |
 | README is complete | ✅ |
-| Git history is maintained | ✅ Sessions 1–3 are committed on `feature/hr-assistant` (HEAD `c4b0c76` at the start of session 4, tree clean; `main` is far behind). Session-4 work is uncommitted — commit when the product owner asks |
+| Git history is maintained | 🟡 Sessions 1–4 are committed on `feature/hr-assistant` (HEAD `7b3e79e`; `main` is far behind). **All session-5 work is uncommitted** (≈ 46 modified + new files) — commit when the product owner asks |
 
 ## 3. Test status
 
-Final full run, 2026-10-06 session 4 (`python scripts/run_tests.py`): **35 files, 769 checks passed, 0 failed.**
+Final full run, 2026-10-06 session 5 (`python scripts/run_tests.py`): **37 files, 882 checks passed, 0 failed**
+(new: `test_holidays_corrections.py`, `test_security_hardening.py`; question bank extended to C14–C18 / D14).
+`scripts/db_snapshot.py` before/after: **"Database unchanged"**; no leftover test rows (`T-*`, `@hrtest.dev`, `RAGTEST*`)
+after the power cut. Frontend: `bunx tsc --noEmit -p .` ✅ · `bun run build` ✅ (bundle ≈ 1.06 MB, KI-006).
+
+Session 4 run (kept for history): **35 files, 769 checks passed, 0 failed.**
 `scripts/db_snapshot.py` snapshot taken before the session's first run vs. after the last: **"Database unchanged (all tables +
 documents folder identical)."** (Baseline at session start: 34 files, 692 checks, all passing.)
 The new question bank was also run against the **old** router: 20 of its checks failed there (payroll crash, salary of
@@ -96,17 +104,28 @@ Frontend: untouched this session (last: `bunx tsc --noEmit` ✅, `bun run build`
 - **Not verified:** table pagination (demo data < page size), check-in/out POSTs (would mutate the dev DB), real Google round-trip.
 - Backend/tests untouched, so `scripts/run_tests.py` was **not** re-run (last full run: session 2, 692 checks).
 
+## 4c. Redesign Part 2 + final quality pass (2026-10-06 session 5)
+
+- `python scripts/ui_qa.py`: admin/hr/manager/employee × 1440/1024/390 × 14 routes → **0 issues** (after deleting the bridge).
+- axe-core WCAG 2.1 A/AA on 22 page views (HR: every page; admin: Settings; manager: Attendance/Leave; employee: 7 pages) →
+  **0 violations in dark and in light** after one fix (success button 3.76:1 → `status-present-solid`, D-040).
+- Pagination (KI-028): Attendance → Records 276 rows / 25 per page at 1440 and 390 px — range text, `offset` API calls,
+  Prev/Next by mouse and keyboard, last page, no overflow.
+- Screenshots reviewed: Attendance, Leave, Payroll, Employee profile, AI Assistant (dark); Leave, Documents, Reports, Settings (light).
+- **Not verified:** check-in/out and correction POSTs by clicking (covered by API tests; would change the dev DB), real Google
+  round-trip, Docker image build.
+
 ## 5. Where we are / what's next
 
-**Current position:** All PRD requirements implemented; the PRD §30 question bank exists and passes; PRD §35 demo
-questions 1–5 are covered by automated tests (LLM mocked). Session-4 changes are uncommitted.
+**Current position:** All PRD requirements and all planned P1/P2 items are implemented and verified; the redesign is
+complete. **Session-5 work is uncommitted.**
 
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
-0. **Owner review of redesign Part 1**, then redesign Part 2 (pages 4–13 + quality pass + delete the legacy bridge).
-1. Commit in logical commits (when the product owner asks).
-2. Security hardening: ≥32-byte JWT/session secrets + fail fast without them (KI-003, KI-011); rate limiting on login/chat.
-3. Owner decisions: team-scoped chat rankings for managers (KI-029); LOP for unrecorded days (KI-023).
-4. "Mark as paid", attendance corrections, holidays calendar, pagination, architecture + AI docs (PRD §33), Docker deployment.
+1. **Commit** session 5 in logical commits (when the product owner asks) — it is the largest uncommitted change so far.
+2. Build and run the Docker stack once on a machine with Docker running (`docker compose up --build`).
+3. Owner decision on Google sign-in auto-provisioning (KI-033: domain allow-list / `email_verified`).
+4. Small cleanups: `users.py` queries → service (KI-034), chat confidence post-check (KI-035), drop unused `axios` (KI-037),
+   frontend code-splitting (KI-006), pagination for `/leaves`, `/documents`, `/users` (KI-007 remainder).
 
 ## 6. History
 
@@ -119,6 +138,11 @@ questions 1–5 are covered by automated tests (LLM mocked). Session-4 changes a
 - **2026-10-06 session 4:** PRD §30 question bank (`tests/test_question_bank.py`, 70 checks incl. a real 2-page PDF); AI
   router fixes it exposed — period resolution (D-029), rankings/headcount/unnamed-colleague/company-payroll tools (D-030),
   payroll-summary crash (R-019), "another employee's salary" leak of own data (R-020); 769 checks.
+- **2026-10-06 session 5:** Mandatory ≥32-byte secrets + rate limiting (D-031); manager team rankings (D-032); attendance
+  corrections + HR edit (D-033); holiday calendar (D-034); pagination (D-035); mark-as-paid (D-036); LOP rule confirmed
+  (D-038); chat profile lookups match REST (D-039); Docker files; `docs/` (PRD §33); redesign Part 2 of all 10 pages (D-037).
+  A power cut interrupted the final steps; they were finished afterwards: legacy bridge deleted, success-button contrast fix,
+  dark/light axe pass, pagination browser check, handoff docs (D-040); 882 checks.
 - **2026-10-05 session 2:** Sanity check of the uncommitted tree (no dangling `retrievers` imports); stale "Build Failed"
   root-caused (KI-005); full browser QA with 9 fixes; test isolation (D-023); current-month demo data (D-024); payroll
   engine + pro-rated OT report (D-021); self-approval rule confirmed (D-022); 692 checks.

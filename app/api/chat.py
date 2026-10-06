@@ -6,10 +6,10 @@ AI HR Chat endpoints (PRD Sections 5, 14–19, 27, 28).
 Endpoints:
     POST /chat          — Ask a question (any authenticated user).
     GET  /chat/history  — The caller's own recent conversation (for the chat UI).
-    GET  /chat/logs     — Audit log of all chat interactions (Admin only).
+    GET  /chat/logs     — Audit log of all chat interactions (Admin only; limit/offset/search, X-Total-Count).
 
 POST /chat flow:
-    1. Authenticate user via JWT.
+    1. Authenticate user via JWT; per-user rate limit (429, D-031).
     2. Sanitize and validate input question.
     3. Prompt-injection guardrail — refuse before touching any data.
     4. Detect intent (EMPLOYEE, ATTENDANCE, LEAVE, SALARY, POLICY, GENERAL, UNKNOWN).
@@ -25,17 +25,26 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.ai.guardrails import PROMPT_INJECTION_REFUSAL, detect_prompt_injection, sanitize_question
 from app.ai.llm import LLMError, generate_response
 from app.ai.prompts import SYSTEM_HR_ASSISTANT_PROMPT, build_chat_prompt
-from app.ai.router import Intent, classify_intent, retrieve_hr_context, retrieve_policy_context
+from app.ai.router import (
+    Intent,
+    classify_intent,
+    holiday_calendar_context,
+    retrieve_hr_context,
+    retrieve_policy_context,
+)
 from app.database.connection import get_db
 from app.database.models import ChatLog, User
+from app.utils import rate_limit
 from app.utils.dependencies import get_current_user, require_role
+from app.utils.pagination import set_total_count
 
 router = APIRouter(tags=["AI Chat"])
 
@@ -129,6 +138,8 @@ def chat_endpoint(
     """
     Process a natural language HR inquiry with controlled data access and grounded LLM synthesis.
     """
+    # Per-user rate limit (D-031) — before any work, so a flood never reaches the LLM.
+    rate_limit.enforce(rate_limit.chat_limiter, f"user:{current_user.id}", "chat messages")
     t0 = time.perf_counter()
     raw_question = payload.text
     cleaned_question = sanitize_question(raw_question)
@@ -170,6 +181,9 @@ def chat_endpoint(
         if policy_hit:
             context_str, primary_file, page, sources = policy_hit
             data_source = "document_rag"
+            calendar_context = holiday_calendar_context(db, cleaned_question)
+            if calendar_context:
+                context_str += "\n\n" + calendar_context
         else:
             context_str, data_source, denial_reason = retrieve_hr_context(
                 db, current_user, intent, cleaned_question
@@ -270,13 +284,23 @@ def chat_history(
     summary="Chat audit log (Admin)",
 )
 def chat_logs(
+    response: Response,
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None, max_length=200, description="Filter by question or user email"),
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
+    query = db.query(ChatLog)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.outerjoin(User, User.id == ChatLog.user_id).filter(
+            or_(ChatLog.question.ilike(pattern), User.email.ilike(pattern))
+        )
+    set_total_count(response, query.count())
     logs = (
-        db.query(ChatLog)
-        .order_by(ChatLog.timestamp.desc(), ChatLog.id.desc())
+        query.order_by(ChatLog.timestamp.desc(), ChatLog.id.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )

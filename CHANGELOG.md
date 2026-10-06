@@ -2,6 +2,47 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-06 (session 5 — hardening, corrections, holidays, payroll, pagination, Docker, docs, redesign Part 2)
+
+### Added
+- **Attendance corrections** (D-033): employees request in/out times for a past day; the manager (team only) or HR/Admin
+  approves or rejects — never their own; HR/Admin edit records directly (`PUT /attendance/records/{id}`, not their own).
+  Table `attendance_corrections`, `correction_service.py`, Attendance → Corrections tab.
+- **Holiday calendar** (D-034): HR-declared company holidays (`holidays` table, `GET/POST/DELETE /holidays`) on top of the
+  national ones; excluded from payroll working days, leave-day counts and the OT rate; Leave → Holidays tab; chat answers.
+- **Mark as paid** (D-036): `POST /salary/mark-paid`, irreversible; a paid month locks payroll regeneration and attendance edits.
+- **Pagination** (D-035): `limit`/`offset` + `X-Total-Count` on `/employees`, `/attendance/records`, `/chat/logs` (+ `search`);
+  `api.getPage<T>()` in the frontend.
+- **Rate limiting** (D-031): `/auth/login` per IP and per (IP, email) failures, `/chat` per user → 429 + `Retry-After`.
+- **Docker**: `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`, `docker/` (image build not yet run, see status).
+- **PRD §33 docs**: `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md`.
+- Migration `f6a7b8c9d0e1` (holidays + attendance_corrections); tests `test_holidays_corrections.py`,
+  `test_security_hardening.py`; question bank C14–C18, D14.
+- Token `--status-present-solid` for filled success buttons (D-040).
+
+### Changed
+- **Secrets** (D-031): `JWT_SECRET_KEY` / `SESSION_SECRET_KEY` must be ≥ 32 bytes and not placeholders, else the app won't
+  start; the hard-coded session-secret fallback is gone; dev secrets rotated.
+- Chat: managers get team-scoped rankings (D-032); profile lookups follow `GET /employees/{id}` — employees can no longer read
+  other people's profiles through chat (D-039); `POST /attendance` refuses the caller's own employee id.
+- Google sign-in starts through the `/api` proxy (works in Docker).
+- **Redesign Part 2** (D-037): Employee form, Employee profile, Departments, Attendance, Leave, Payroll, Documents, Reports,
+  AI Assistant, Settings rebuilt on design system v2 (`pages/attendance|chat|leave|payroll|people|settings/*`).
+
+### Removed
+- The dark-mode legacy bridge and legacy colour aliases from `globals.css` (D-028 completed, D-040).
+
+### Fixed
+- KI-003, KI-011 (secrets), KI-012 (attendance corrections), KI-029 (manager rankings), KI-027 (redesign), KI-028
+  (pagination verified in the browser).
+- Light-mode contrast of the success button (Approve / check-in): 3.76:1 → AA.
+
+### Notes
+- Product-owner decisions this session: D-032, D-033, D-037, D-038 (unrecorded days stay paid), D-039.
+- A power cut interrupted the session's last steps; they were completed afterwards (bridge removal, contrast fix, quality pass,
+  handoff docs). Verification: 37 files / 882 checks / 0 failed, DB unchanged; `ui_qa.py` 0 issues; axe 0 violations in light
+  and dark on 22 page views; `tsc` + build clean.
+
 ## 2026-10-06 (session 4 — PRD §30 question bank + AI router fixes)
 
 ### Added

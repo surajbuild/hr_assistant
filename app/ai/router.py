@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.guardrails import check_rbac_access
 from app.database.models import Employee, User, UserRole
-from app.services import attendance_service, employee_service, leave_service, salary_service
+from app.services import attendance_service, employee_service, holiday_service, leave_service, salary_service
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +106,9 @@ def classify_intent(question: str) -> Intent:
         r"\bpublic holiday",
         r"\bnational holiday",
         r"\bholiday list\b",
+        r"\bholiday calendar\b",
+        r"\bupcoming holidays?\b",
+        r"\b(list|which|what) (are )?(the )?(company )?holidays\b",
         r"\bannual leave entitlement",
         r"\bentitled to\b",
         r"\bhow many leaves are allowed\b",
@@ -494,23 +497,34 @@ def _ranking_context(
     metric: str,
     question: str,
 ) -> Tuple[str, str, Optional[str]]:
-    """Company-wide ranking (HR/Admin only, unchanged from the original overtime rule)."""
+    """
+    Attendance ranking. HR/Admin → company-wide; manager → themself + direct reports (KI-029, D-032,
+    same scope as GET /attendance/records); employee → refused.
+    """
     label = _RANKING_LABELS[metric]
-    if current_user.role not in COMPANY_WIDE_ROLES:
+    if current_user.role not in COMPANY_WIDE_ROLES and current_user.role != UserRole.MANAGER.value:
         denial = (
-            f"Access denied: Company-wide {_RANKING_DENIAL_NAMES[metric]} rankings are restricted to HR and Administrators."
+            f"Access denied: {_RANKING_DENIAL_NAMES[metric].capitalize()} rankings are restricted to HR, "
+            "Administrators and managers (for their own team)."
         )
         return denial, "attendance_database", denial
 
+    scope_ids = employee_service.get_scope_employee_ids(db, current_user)
+    scope_text = "company-wide" if scope_ids is None else "limited to you and your direct reports"
     month, year, note = resolve_period(db, question)
     start_d, end_d = _period_bounds(month, year)
     period = _period_label(month, year)
-    ranked = attendance_service.rank_employees(db, metric, start_date=start_d, end_date=end_d, limit=5)
+    ranked = attendance_service.rank_employees(
+        db, metric, start_date=start_d, end_date=end_d, scope_ids=scope_ids, limit=5
+    )
     if not ranked:
-        context = f"No {label} records found for {period}."
+        context = f"No {label} records found for {period} ({scope_text})."
         return (f"{context}\n{note}" if note else context), "attendance_database", None
 
-    lines = [f"Employees ranked by {label} for {period} (calculated by the HR system; equal values share a rank):"]
+    lines = [
+        f"Employees ranked by {label} for {period}, {scope_text} "
+        "(calculated by the HR system; equal values share a rank):"
+    ]
     for item in ranked:
         rank = 1 + sum(1 for other in ranked if other["value"] > item["value"])
         who = f"{item['employee_name']} ({item['employee_code']}, {item['department']})"
@@ -559,6 +573,22 @@ def _headcount_context(db: Session, current_user: User, question: str) -> Tuple[
         active = sum(d["active_count"] for d in departments)
         lines.append(f"Total: {total} employees ({active} active) in {len(departments)} departments.")
     return "\n".join(lines), "employee_database", None
+
+
+def holiday_calendar_context(db: Session, question: str) -> Optional[str]:
+    """
+    The company holiday calendar (national + HR-declared holidays, D-034) for the year named in a
+    holiday question (default: this year), or None when the question is not about holidays.
+    Added to POLICY context whether the policy text came from documents or policies.json.
+    """
+    q_lower = question.lower()
+    if "holiday" not in q_lower:
+        return None
+    year_match = re.search(r"\b(20\d{2})\b", q_lower)
+    year = int(year_match.group(1)) if year_match else date.today().year
+    lines = [f"Company holiday calendar for {year} (from the HR system):"]
+    lines += [f"- {h['date']} ({h['weekday']}): {h['name']} [{h['kind']}]" for h in holiday_service.list_holidays(db, year)]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +680,10 @@ def retrieve_hr_context(
         else:
             context = json.dumps(policies_dict, indent=2)
 
+        calendar_context = holiday_calendar_context(db, question)
+        if calendar_context:
+            context += "\n\n" + calendar_context
+
         return context, "policies.json", None
 
     # -----------------------------------------------------------------------
@@ -726,7 +760,7 @@ def retrieve_hr_context(
     # 3. ATTENDANCE INTENT
     # -----------------------------------------------------------------------
     if intent == Intent.ATTENDANCE:
-        # Company-wide rankings: "Who worked the most overtime?", "Who was late the most?"
+        # Rankings: "Who worked the most overtime?", "Who was late the most?" (manager → own team)
         metric = detect_ranking_metric(question)
         if metric:
             return _ranking_context(db, current_user, metric, question)
@@ -805,8 +839,9 @@ def retrieve_hr_context(
             return "\n".join(lines), "leave_database", None
 
         lines.append(f"\nLeave applications for {target_emp.name}:")
+        holidays = holiday_service.get_declared_holiday_dates(db)
         for lv in sorted(leaves, key=lambda l: l.from_date, reverse=True):
-            days = leave_service.count_leave_days(lv.from_date, lv.to_date)
+            days = leave_service.count_leave_days(lv.from_date, lv.to_date, holidays=holidays)
             lines.append(
                 f"- Type: {lv.leave_type.upper()} | Dates: {lv.from_date} to {lv.to_date} | "
                 f"Working days: {days} | Status: {lv.status.upper()} | Reason: {lv.reason or 'None'}"
@@ -841,6 +876,11 @@ def retrieve_hr_context(
             if context.startswith("No employee record found"):
                 context = "No employee record found matching the inquiry."
             return context, source, denial
+
+        # Another person's profile: same scope as GET /employees/{id} (D-039) — refused before the LLM
+        allowed, denial = check_rbac_access(current_user, intent.value, target_employee_id=target_emp.id)
+        if not allowed:
+            return denial, "employee_database", denial
 
         manager_name = target_emp.manager.name if target_emp.manager else "None (Executive)"
         context = (

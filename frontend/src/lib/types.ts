@@ -109,6 +109,53 @@ export interface DailyAttendance {
   rows: DailyAttendanceRow[];
 }
 
+/** GET/POST /attendance/corrections… — a request to set one day's in/out time (D-033). */
+export type CorrectionStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+export interface AttendanceCorrection {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  employee_code: string;
+  department: string;
+  attendance_date: string;
+  requested_in_time: string;
+  requested_out_time: string;
+  reason: string;
+  status: CorrectionStatus | string;
+  requested_at: string;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  /** The record of that day as it is now (null = no record). */
+  current_status: AttendanceStatus | null;
+  current_in_time: string | null;
+  current_out_time: string | null;
+}
+
+/** GET /attendance/records row (staff search, paginated — total in `X-Total-Count`). */
+export interface AttendanceRecordRow extends AttendanceRecord {
+  employee_code: string;
+  employee_name: string;
+  department: string;
+}
+
+// ── Holidays (D-034) ────────────────────────────────────────────────────────
+
+export interface Holiday {
+  /** null for national holidays (defined in code, cannot be removed). */
+  id: number | null;
+  date: string;
+  name: string;
+  kind: "national" | "company" | string;
+  weekday: string;
+}
+
+export interface HolidayList {
+  year: number;
+  items: Holiday[];
+}
+
 // ── Leaves ──────────────────────────────────────────────────────────────────
 
 export type LeaveType = "casual" | "sick" | "earned" | "unpaid" | "maternity" | "paternity";
@@ -188,6 +235,14 @@ export interface PayrollGenerateResult {
   updated: number;
   skipped: { employee_id: number; employee_name: string; reason: string }[];
   items: PayrollLineItem[];
+}
+
+/** POST /salary/mark-paid (D-036) — irreversible; paid rows are locked. */
+export interface MarkPaidResult {
+  marked: number[];
+  already_paid: number[];
+  not_found: number[];
+  paid_at: string;
 }
 
 export interface SalaryList {

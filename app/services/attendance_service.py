@@ -352,20 +352,26 @@ STANDARD_WORKING_MINUTES = 480   # 8h of work (9:00–18:00 minus 1h lunch)
 HALF_DAY_THRESHOLD_MINUTES = 240  # fewer than 4h worked → half day
 
 # Fixed-date mandatory national holidays (app/data/policies.json → holiday_rules). Paid, non-working days.
+# They recur every year. Holidays HR declares for one date live in the `holidays` table (D-034) —
+# pass them as `extra_holidays` (holiday_service.get_declared_holiday_dates).
 COMPANY_HOLIDAYS = {(1, 26): "Republic Day", (8, 15): "Independence Day", (10, 2): "Gandhi Jayanti"}
 
 
-def is_working_day(day: date) -> bool:
-    """Mon–Fri and not a company holiday."""
-    return day.weekday() < 5 and (day.month, day.day) not in COMPANY_HOLIDAYS
+def is_working_day(day: date, extra_holidays: Optional[Set[date]] = None) -> bool:
+    """Mon–Fri, not a national holiday and not one of `extra_holidays` (declared company holidays)."""
+    return (
+        day.weekday() < 5
+        and (day.month, day.day) not in COMPANY_HOLIDAYS
+        and not (extra_holidays and day in extra_holidays)
+    )
 
 
-def working_days_between(start: date, end: date) -> List[date]:
+def working_days_between(start: date, end: date, extra_holidays: Optional[Set[date]] = None) -> List[date]:
     """All working days in [start, end]."""
     days = []
     current = start
     while current <= end:
-        if is_working_day(current):
+        if is_working_day(current, extra_holidays):
             days.append(current)
         current = date.fromordinal(current.toordinal() + 1)
     return days
@@ -552,8 +558,13 @@ def list_attendance_records(
     end_date: Optional[date] = None,
     status: Optional[str] = None,
     limit: int = 1000,
-) -> List[Dict[str, Any]]:
-    """Filtered attendance records joined with employee name/department."""
+    offset: int = 0,
+    with_total: bool = False,
+) -> Any:
+    """
+    Filtered attendance records joined with employee name/department, newest first.
+    Returns the page as a list, or {"total", "items"} when `with_total` is set (pagination).
+    """
     if start_date and end_date and start_date > end_date:
         raise InvalidDateRangeError("start_date cannot be after end_date.")
 
@@ -569,8 +580,14 @@ def list_attendance_records(
     if status:
         query = query.filter(Attendance.status == status)
 
-    rows = query.order_by(Attendance.attendance_date.desc(), Employee.name.asc()).limit(limit).all()
-    return [
+    total = query.count() if with_total else None
+    rows = (
+        query.order_by(Attendance.attendance_date.desc(), Employee.name.asc(), Attendance.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    items = [
         {
             "id": att.id,
             "employee_id": emp.id,
@@ -587,3 +604,4 @@ def list_attendance_records(
         }
         for att, emp in rows
     ]
+    return {"total": total, "items": items} if with_total else items

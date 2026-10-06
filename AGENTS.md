@@ -51,7 +51,7 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Backend: Python 3 · FastAPI · SQLAlchemy 2 · Pydantic 2 · Alembic · MySQL (PyMySQL) · JWT (PyJWT) · bcrypt · Authlib (Google OAuth) · openpyxl
 - Frontend: Bun · React 19 · TypeScript · Tailwind CSS v4 · shadcn/ui-style components on Radix primitives · lucide-react icons · recharts (`frontend/`, design system: `frontend/DESIGN.md`)
 - AI: OpenAI-compatible Chat Completions API (currently OpenRouter) via `app/ai/llm.py`; rule-based intent router `app/ai/router.py`
-- RAG: local document parsing (pypdf / python-docx / txt) → chunking → TF-IDF vectors (pure Python) stored in MySQL → cosine similarity retrieval (`app/rag/`)
+- RAG: local document parsing (pypdf / python-docx / txt) → chunking → term-frequency vectors (pure Python) stored in MySQL → Okapi BM25 retrieval (`app/rag/`, D-004)
 
 ---
 
@@ -93,12 +93,17 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 6. Never log passwords, tokens, or full salary tables. Never commit `.env`. Keep `.env.example` updated when you add a variable.
 7. File uploads: whitelist extensions (`pdf`, `docx`, `txt`), cap size (10 MB), store under `documents/` with a
    generated filename — never trust the client filename for the storage path.
-8. JWT secret must be ≥ 32 bytes in any shared environment.
+8. `JWT_SECRET_KEY` and `SESSION_SECRET_KEY` must be ≥ 32 bytes — the app refuses to start otherwise (`load_secret`, D-031).
+9. `/auth/login` and `/chat` are rate limited (429 + `Retry-After`, `app/utils/rate_limit.py`, in-memory → one uvicorn
+   worker). Only trust `X-Forwarded-For` through `rate_limit.client_ip` (trusted proxies only).
+10. Nobody reviews their own request — leave (D-022) or attendance correction (D-033); HR/Admin cannot edit their own
+   attendance record directly.
 
 ## 4. Database rules
 
 - MySQL is the system of record. Connection string comes from `DATABASE_URL` in `.env`.
-- Tables: `employees`, `users`, `attendance`, `leaves`, `salary`, `documents`, `document_chunks`, `chat_logs` (+ `alembic_version`).
+- Tables: `employees`, `users`, `attendance`, `leaves`, `salary`, `documents`, `document_chunks`, `chat_logs`, `holidays`,
+  `attendance_corrections` (+ `alembic_version`). New tables must also be added to `scripts/db_snapshot.py` `TABLES`.
 - `employees.monthly_gross_salary` is **confidential** (D-021): serialize it only for HR/Admin or the employee themself
   (`employee_service.serialize_employee(..., include_salary=employee_service.can_view_salary(user, emp_id))`).
 - Enum-like columns are stored as **lowercase strings** (see enums in `app/database/models.py`). Keep using the enum `.value`s.
@@ -107,8 +112,12 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Demo/seed data: `python scripts/seed_db.py` (data in `app/data/seed_data.json`). The seed dataset covers **Aug–Sep 2024**.
   Current-month demo data: `python scripts/generate_demo_month.py` (idempotent, D-024) — run it each new month you demo.
   The dashboard falls back to the latest date that has attendance when today has none.
-- Payroll rules (LOP, PF, OT pay) live as constants at the top of `app/services/salary_service.py` (D-021); the company
-  holiday calendar is `attendance_service.COMPANY_HOLIDAYS`. Never duplicate these numbers elsewhere.
+- Payroll rules (LOP, PF, OT pay) live as constants at the top of `app/services/salary_service.py` (D-021); the national
+  holidays are `attendance_service.COMPANY_HOLIDAYS`, HR-declared ones are the `holidays` table (D-034) — anything counting
+  working days must pass `holiday_service.get_declared_holiday_dates(db, …)` as `extra_holidays`/`holidays`. Never duplicate
+  these numbers elsewhere.
+- A month whose salary row is paid (`paid_at`) is **locked**: no payroll regeneration, no attendance correction/edit (D-033,
+  D-036). Mark-as-paid is irreversible.
 
 ## 5. Testing rules
 
@@ -119,7 +128,8 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
   - Create your own rows with unique markers (codes `T-<AREA>-*`, emails `@hrtest.dev`, document names `RAGTEST*`) and
     delete them in `finally`. Never modify or delete seeded/demo rows you did not create.
   - Any test that calls `POST /chat` must use `tests/helpers.TrackingClient(app, db)` and call
-    `client.cleanup_chat_logs()` in `finally` (`/chat` always writes a `chat_logs` row).
+    `client.cleanup_chat_logs()` in `finally` (`/chat` always writes a `chat_logs` row). `TrackingClient` also resets the
+    per-user chat rate limit before each `/chat` call (D-031); don't log in more than ~30×/min from one test file.
   - Assertions must not depend on how much demo data exists (derive expectations from the DB, compare deltas, or
     scope queries, e.g. `retriever.search(..., document_ids=own_ids)`).
   - Verify before handing off: `python scripts/db_snapshot.py save before.json` → `python scripts/run_tests.py` →
@@ -189,9 +199,10 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Never show an action the backend will refuse for this user (e.g. approving your own leave, deactivating yourself) — hide it
   and, where the reason isn't obvious, explain it with a `Notice`.
 - Adding a menu item or changing the shell? Re-run `python scripts/ui_qa.py` (asserts sidebar/rail/drawer per width, role menus).
-- *(Redesign in progress:* Part 1 = shell + Login/Dashboard/Employees; Part 2 = the other 10 pages — see
-  `frontend/REDESIGN_NOTES.md`. Until Part 2 ends, un-redesigned pages rely on a temporary dark-mode "legacy bridge" in
-  `globals.css` (D-028) — don't add new dependencies on it.)
+- The redesign is complete (Part 1 + Part 2, D-040): every page uses design system v2 and the dark-mode legacy bridge
+  is gone — raw palette classes (`bg-white`, `slate-*`, `text-white`) now render wrongly in dark mode, so use tokens only.
+  Filled success buttons use `status-present-solid` (AA with white text). After UI work run `ui_qa.py` **and** an axe scan in
+  both themes (`ui_qa.py` checks the light theme only).
 
 ---
 
@@ -219,7 +230,8 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Must NOT add heavyweight dependencies (torch, sentence-transformers, chromadb, faiss) without a recorded decision — see D-004.
 - Must NOT commit/push to git unless the product owner asks.
 - Must NOT let a test touch rows it did not create, and must NOT re-seed the real demo data from a test.
-- Must NOT allow anyone (including HR/Admin) to approve their own leave (D-022, confirmed by the product owner).
+- Must NOT allow anyone (including HR/Admin) to approve their own leave (D-022, confirmed by the product owner) or review their
+  own attendance correction (D-033).
 - Must NOT expose `monthly_gross_salary` or another person's salary to managers or employees.
 
 ## 10. Known constraints
@@ -267,6 +279,10 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - The AI router only knows what its tool puts in the context: when a question type returns "not available", check the
   router branch builds the needed numbers (the leave-balance bug was exactly this).
 - When demo data grows, hard-coded expectations like "latest payroll month = Sep 2024" break — derive them from the DB.
+- List endpoints paginate with `limit`/`offset` and report the total in `X-Total-Count` (D-035) — keep returning a plain array;
+  the frontend reads it with `api.getPage<T>()`.
+- Starting the backend for browser QA: raise the login limit (`RATE_LIMIT_LOGIN_PER_MINUTE=1000`) or QA scripts that log in
+  many times get 429s.
 - `tests/test_question_bank.py` is the AI regression bank (PRD §30). When a chat question is answered wrongly, add it there
   first (failing), then fix the router. Check refusals with "LLM not called", not only with the answer text — the old router
   answered "another employee's salary" with the caller's own salary, which looked fine at a glance.
