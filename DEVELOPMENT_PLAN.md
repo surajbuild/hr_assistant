@@ -70,6 +70,14 @@ Dependencies:
 - [x] Tests for new endpoints (employees CRUD, departments, attendance daily/check-in, leaves list/balance/cancel/manager scope, salary list, documents/RAG, chat sources, users, dashboard/me)
 - [ ] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — currently partially covered by `test_ai_router.py`, `test_chat_api.py`, `test_rbac_matrix.py`, `test_rag.py`
 
+## Frontend redesign (D-026) — product-owner request, 2026-10-05
+
+- [x] Part 1: design tokens + dark mode, Radix primitives, sidebar shell, ⌘K palette, Login, Dashboard (4 role layouts), Employees
+- [ ] **Owner approval of the Part 1 direction** (checkpoint — do not start Part 2 without it)
+- [ ] Part 2: Employee form, Employee profile (cover/tabs), Departments, Attendance (calendar heat-map), Leave (drawer/timeline),
+      Payroll, Documents (drag-and-drop), Reports, AI Assistant (bubbles/copy/history), Settings
+- [ ] Part 2: delete the dark-mode legacy bridge, full quality pass (roles × widths × themes, axe, keyboard), finalise docs
+
 ## P2 — Important improvements
 
 - [x] Tests must not change the dev DB — done via test-owned data + `TrackingClient` + namespaced seed test, verified with `scripts/db_snapshot.py` (D-023)
@@ -99,10 +107,10 @@ Dependencies:
 - [ ] Performance module (review cycles, goals)
 - [ ] Biometric sync
 - [ ] HR letter generation (offer/relieving/experience letters, payslip PDF)
-- [ ] Notifications bell (leave approvals etc.)
+- [x] Notifications bell — approver roles only, pending leave requests (redesign Part 1; employees have no notification endpoint)
 - [ ] Bulk employee import from Excel
 - [ ] Streaming chat responses
-- [ ] Dark mode
+- [x] Dark mode (redesign Part 1, D-026)
 
 ---
 

@@ -2,6 +2,36 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-05 (session 3 — frontend redesign, Part 1 of 2)
+
+### Added
+- **Design system v2** (`frontend/DESIGN.md`, D-026): token layer in `styles/globals.css` (light + dark), indigo accent, fixed
+  per-status colours, flat cards, motion utilities honouring `prefers-reduced-motion`.
+- **Dark mode**: Light/Dark/System toggle (top bar + Login), persisted (`hr_theme`), applied before first paint.
+- **App shell**: collapsible left sidebar (rail on tablet, drawer on phones), slim top bar with breadcrumb, **⌘/Ctrl+K command
+  palette** (pages, actions, employee search for staff), notification bell for approver roles (pending leave requests), profile menu.
+- Radix primitives + new UI components: Dialog/Drawer, DropdownMenu, Tooltip, Popover, Switch, Badge, Skeleton, Separator,
+  Segmented, DataTable sorting/pagination/mobile cards, StatCard (count-up, delta, sparkline), RingProgress, Donut, Sparkline,
+  AttendanceHeatmap (D-027).
+- **Login** (split screen, inline validation, show/hide password, demo chips), **Dashboard** (four role-specific layouts built from
+  existing endpoints), **Employees** (table ⇄ card view, status segmented filter, sort, pagination, row menu, mobile cards).
+- `frontend/DESIGN.md`, `frontend/REDESIGN_NOTES.md`; decisions D-026/D-027/D-028.
+
+### Changed
+- `AGENTS.md` §7 rewritten for the new design; D-002's visual/navigation part and D-025 superseded.
+- `Modal`/`ConfirmDialog` rebuilt on Radix Dialog (same API): focus trap, Escape, focus restored to the opener, bottom sheet on phones.
+- Shared components restyled to tokens (States with skeletons, StatusBadge, Tabs with arrow-key navigation, Toast, Field, charts,
+  LeaveBalanceGrid rings, TodayAttendanceCard hero). All 13 pages now render inside the new shell.
+- `scripts/ui_qa.py` asserts the sidebar/rail/drawer shell at 1440/1024/390 instead of the old top navbar.
+
+### Fixed
+- KI-018: table rows with a click action are now keyboard-focusable and activatable.
+
+### Notes
+- Backend untouched; no API/contract/auth/role changes. Verification: `tsc` + `bun run build` clean; `ui_qa.py` 0 issues
+  (4 roles × 3 widths × 14 routes); 56 scripted behaviour checks; axe-core WCAG 2.1 AA clean on Login/Dashboard/Employees in
+  light + dark. Awaiting owner approval before Part 2 (remaining 10 pages).
+
 ## 2026-10-05 (session 2)
 
 ### Added

@@ -10,8 +10,8 @@ the role may open (plus a forbidden one), and records:
   - console errors / uncaught page errors
   - failed API calls (HTTP >= 400 on /api/*)
   - horizontal page overflow (document wider than the viewport)
-  - layout invariants from AGENTS.md §7 (top navbar present, no sidebar,
-    menu items match the role, hamburger visible on phones)
+  - layout invariants from AGENTS.md §7 (design system v2: sticky top bar, left sidebar >= 768px
+    [expanded >= 1280px, icon rail 768-1279px], drawer + hamburger on phones, menu items match the role)
   - a full-page screenshot per page
 
 Usage (servers must be running: backend :8000, frontend :3000):
@@ -73,7 +73,7 @@ def check_page(page, path: str, role: str, width: int, out: Path, issues: list, 
     # let skeleton/spinners resolve
     try:
         page.wait_for_function(
-            "() => !document.querySelector('[data-loading=\"true\"], .animate-spin')", timeout=8000
+            "() => !document.querySelector('[data-loading=\"true\"], .animate-spin, [role=status] .skeleton')", timeout=8000
         )
     except Exception:
         issues.append(f"{role}@{width} {path}: still loading after 8s")
@@ -126,43 +126,42 @@ def run(roles, widths, out: Path) -> int:
                     """() => {
                         const header = document.querySelector('header');
                         const aside = document.querySelector('aside');
-                        const links = [...document.querySelectorAll('header nav a')].map(a => a.textContent.trim());
+                        const vis = (el) => !!(el && el.offsetWidth > 0 && el.offsetHeight > 0);
+                        const links = [...document.querySelectorAll('aside nav[aria-label="Main"] a')].map(a => (a.getAttribute('aria-label') || a.textContent).trim());
+                        const burger = document.querySelector('header button[aria-label="Open navigation menu"]');
                         return {
                           header: !!header,
                           headerHeight: header ? Math.round(header.getBoundingClientRect().height) : 0,
                           sticky: header ? getComputedStyle(header).position : null,
-                          aside: !!(aside && aside.offsetWidth > 0),
+                          asideVisible: vis(aside),
+                          asideWidth: aside ? Math.round(aside.getBoundingClientRect().width) : 0,
                           links,
-                          menuButton: !!document.querySelector('header button[aria-label*="menu" i]'),
-                          menuButtonVisible: (() => { const b = document.querySelector('header button[aria-label*="menu" i]'); return !!(b && b.offsetWidth > 0); })(),
+                          menuButtonVisible: vis(burger),
+                          searchButton: !!document.querySelector('header button[aria-label^="Search"]'),
+                          themeButton: !!document.querySelector('header button[aria-label^="Theme"]'),
                           greeting: (document.querySelector('h1')||{}).textContent || '',
-                          // every desktop menu item must be fully visible, or a scroll arrow must be offered
-                          hiddenItems: (() => {
-                            const nav = document.querySelector('header nav[aria-label="Main"]');
-                            if (!nav || nav.offsetWidth === 0) return [];
-                            const nr = nav.getBoundingClientRect();
-                            return [...nav.querySelectorAll('a')].filter(a => {
-                              const r = a.getBoundingClientRect(); return r.right > nr.right + 1 || r.left < nr.left - 1;
-                            }).map(a => a.textContent.trim());
-                          })(),
-                          scrollArrow: !!document.querySelector('header button[aria-label^="Scroll menu"]'),
                         };
                     }"""
                 )
                 if not layout["header"]:
-                    issues.append(f"{role}@{width}: no <header> top navbar")
-                if layout["aside"]:
-                    issues.append(f"{role}@{width}: a visible sidebar <aside> exists")
+                    issues.append(f"{role}@{width}: no <header> top bar")
                 if layout["sticky"] not in ("sticky", "fixed"):
-                    issues.append(f"{role}@{width}: header not sticky ({layout['sticky']})")
-                if width >= 1280:
+                    issues.append(f"{role}@{width}: top bar not sticky ({layout['sticky']})")
+                if not layout["searchButton"] or not layout["themeButton"]:
+                    issues.append(f"{role}@{width}: top bar missing search or theme control")
+                if width >= 768:
+                    if not layout["asideVisible"]:
+                        issues.append(f"{role}@{width}: sidebar not visible at >= 768px")
+                    elif width >= 1280 and layout["asideWidth"] < 200:
+                        issues.append(f"{role}@{width}: sidebar should be expanded at >= 1280px (width {layout['asideWidth']})")
+                    elif width < 1280 and layout["asideWidth"] > 100:
+                        issues.append(f"{role}@{width}: sidebar should be an icon rail at 768-1279px (width {layout['asideWidth']})")
                     expected = [lbl for lbl, rs in NAV_LABELS.items() if role in rs]
-                    visible = [l for l in layout["links"] if l]
-                    if [l for l in visible if l in NAV_LABELS] != expected:
-                        issues.append(f"{role}@{width}: menu {visible} != expected {expected}")
-                    if layout["hiddenItems"] and not layout["scrollArrow"]:
-                        issues.append(f"{role}@{width}: menu items clipped without scroll cue: {layout['hiddenItems']}")
+                    if layout["links"] != expected:
+                        issues.append(f"{role}@{width}: menu {layout['links']} != expected {expected}")
                 else:
+                    if layout["asideVisible"]:
+                        issues.append(f"{role}@{width}: sidebar visible on phone (should be a drawer)")
                     if not layout["menuButtonVisible"]:
                         issues.append(f"{role}@{width}: hamburger menu button not visible on phone")
 
@@ -209,7 +208,7 @@ def run(roles, widths, out: Path) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--roles", nargs="*", default=ALL)
-    ap.add_argument("--widths", nargs="*", type=int, default=[1400, 390])
+    ap.add_argument("--widths", nargs="*", type=int, default=[1440, 1024, 390])
     ap.add_argument("--out", default="qa_shots")
     args = ap.parse_args()
     sys.exit(run(args.roles, args.widths, Path(args.out)))

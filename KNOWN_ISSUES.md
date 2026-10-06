@@ -21,18 +21,23 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-012 | HR cannot edit/correct an existing attendance record (create only) | 🟡 | Attendance | Open |
 | KI-013 | Settings → "Company Policy" tab shows hard-coded values duplicated from `policies.json` | 🟡 | Frontend | Open |
 | KI-017 | `httpx2` in requirements looks odd but is imported by Starlette's TestClient here | 🟡 | Dependencies | Documented |
-| KI-018 | Clickable table rows are not keyboard-focusable (row action buttons are) | 🟡 | Accessibility | Open |
+| KI-018 | Clickable table rows are not keyboard-focusable (row action buttons are) | 🟡 | Accessibility | Fixed in `DataTable` (rows with `onRowClick` are focusable, Enter/Space activate) — verified on Employees; other tables get it automatically |
 | KI-019 | Check-in/out uses the server's local clock; no timezone setting | 🟡 | Attendance | Open |
 | KI-021 | Manager `/leaves` list includes the manager's own leaves | 🟡 | Leave | Mitigated (UI hides actions + explains, API 403 — D-022) |
 | KI-022 | `uvicorn --reload` never restarts its worker when launched from a console-less shell (agent tools) | 🟡 | Dev tooling | Workaround |
 | KI-023 | Payroll: working days without any attendance record are paid (not LOP) | 🟡 | Payroll | By design (D-021) — revisit with HR |
 | KI-024 | Payroll for the current month is provisional and changes as attendance is recorded | 🟡 | Payroll | By design (flagged `provisional` in API + UI) |
 | KI-025 | Orphan files stay in `documents/` after a manual seed reset or archive | 🟡 | Documents | Open |
+| KI-027 | Redesign Part 2 pending: 10 pages still use their original layout inside the new shell (restyled via shared components + dark-mode legacy bridge, D-028); some wide tables scroll inside their card at 1280–1440px (sidebar takes 248px) | 🟠 | Frontend | Open — Part 2 (`frontend/REDESIGN_NOTES.md` §4–5) |
+| KI-028 | `DataTable`/card pagination is not browser-verified (demo data < page size) | 🟡 | Frontend | Open — verify in Part 2 |
 | KI-026 | `test_rag.py` chat-source check passes for either the test or the real "Work From Home Policy.txt" (same file name) | 🟡 | Tests | Open |
 
 ---
 
 ## Details
+
+### KI-027 / KI-028 — Redesign Part 1 leftovers
+- See `frontend/REDESIGN_NOTES.md` §5 for the full list (legacy bridge, wide tables beside the sidebar, ChatPage `bg-navy` chips in dark mode, pagination unverified, check-in POSTs not exercised).
 
 ### KI-001 — Demo data goes stale
 - **Cause:** The seed (`app/data/seed_data.json`) is Aug–Sep 2024; real demo usage needs current-month data.

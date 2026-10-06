@@ -14,6 +14,7 @@
 4. Read `DEVELOPMENT_PLAN.md`.
 5. Read the relevant sections of `PROJECT_DECISIONS.md` and `KNOWN_ISSUES.md`.
 6. Read the relevant PRD requirements in `prd_extracted.md`.
+   *(UI work: also read `frontend/DESIGN.md` and, while the redesign is in progress, `frontend/REDESIGN_NOTES.md`.)*
 7. Inspect the actual code before making assumptions — docs can drift; code is the ground truth of *current behaviour*.
 8. Only then begin implementation.
 
@@ -41,14 +42,14 @@ Never delete still-relevant knowledge just to keep files short. Mark completed w
 
 ## 1. What this project is
 
-**AI HR Assistant** — an HRMS-style web application (modelled on the look and module layout of
-`https://hrms.nectorinternational.com/`) whose distinguishing feature is an **AI chat assistant** that answers
+**AI HR Assistant** — an HRMS-style web application (module layout and roles modelled on
+`https://hrms.nectorinternational.com/`; visual design = design system v2, D-026) whose distinguishing feature is an **AI chat assistant** that answers
 natural-language HR questions from MySQL data (controlled tools) and from uploaded HR documents (RAG), while
 enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product requirement; the reference site is the
-**UI/UX and module-layout reference only** (see `PROJECT_DECISIONS.md` D-002).
+**module/role reference only** (D-002; its visual/navigation part was superseded by D-026).
 
 - Backend: Python 3 · FastAPI · SQLAlchemy 2 · Pydantic 2 · Alembic · MySQL (PyMySQL) · JWT (PyJWT) · bcrypt · Authlib (Google OAuth) · openpyxl
-- Frontend: Bun · React 19 · TypeScript · Tailwind CSS v4 · shadcn/ui-style components · lucide-react icons (`frontend/`)
+- Frontend: Bun · React 19 · TypeScript · Tailwind CSS v4 · shadcn/ui-style components on Radix primitives · lucide-react icons · recharts (`frontend/`, design system: `frontend/DESIGN.md`)
 - AI: OpenAI-compatible Chat Completions API (currently OpenRouter) via `app/ai/llm.py`; rule-based intent router `app/ai/router.py`
 - RAG: local document parsing (pypdf / python-docx / txt) → chunking → TF-IDF vectors (pure Python) stored in MySQL → cosine similarity retrieval (`app/rag/`)
 
@@ -148,24 +149,51 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Icons: `lucide-react` only.
 - No `any` unless unavoidable; define response types in `lib/types.ts`.
 
-## 7. UI/UX rules (reference: hrms.nectorinternational.com)
+## 7. UI/UX rules (design system v2 — see `frontend/DESIGN.md`, decision D-026)
 
-- Layout: **sticky white top navbar (52px)** with brand at left, horizontally scrollable icon+label nav links in the
-  middle, notification/profile menu at right. **No left sidebar.** Content area on `#f1f5f9` background, max width ~1400px, 24px padding.
-- Palette (CSS variables in `frontend/styles/globals.css`): primary navy `#1e3a5f`, accent blue `#2563eb`,
-  success `#059669`, warning `#d97706`, danger `#dc2626`, text `#0f172a` / `#64748b`, border `#e2e8f0`, cards white.
-- Font: Inter.
-- Menu items are filtered by role (the same role sets the backend enforces). Order:
-  Dashboard · My Profile (employee) · Employees · Departments · Attendance · Leave · Payroll · Documents · Reports · AI Assistant · Settings (admin).
-- Status badges: colored pills (present=green, absent=red, late=amber, half day=blue, leave=purple, holiday/weekend=gray).
-- Every data view needs: loading state, empty state, error state.
-- Dashboard greeting is role-specific ("Welcome, Admin! Full system overview." / "Welcome, HR! …" / "Welcome, Manager! Team overview." / "Welcome back, <name>!").
-- Must be usable at phone width (390 px): no horizontal page scroll; tables scroll **inside** their card (scroll
-  containers need `relative` so `sr-only`/absolute children can't widen the page).
-- Navbar density (D-025): hamburger menu below 1280 px; 1280–1535 px text-only links; ≥ 1536 px icons + user name;
-  scroll arrows when the row overflows. Adding a menu item? Re-run `scripts/ui_qa.py` at 1280 and 1400 px.
-- Never show an action the backend will refuse for this user (e.g. approving your own leave, deactivating yourself) —
-  hide it and, where the reason isn't obvious, explain it with a `Notice`.
+> The product owner replaced the visual/navigation presentation of D-002 (top navbar, navy palette) with a premium SaaS
+> design. **`frontend/DESIGN.md` is the source of truth for tokens, components and patterns; read it before UI work.**
+> Still binding from D-002: module list and menu order, role-gated menu, role-specific dashboard greetings.
+
+- **Navigation shell:** collapsible **left sidebar** (≥1280px expanded 248px, user-collapsible to a 68px icon rail; 768–1279px
+  icon rail with tooltips; <768px hamburger → focus-trapped drawer) + slim sticky **56px top bar** (breadcrumb, ⌘/Ctrl+K
+  command palette, notification bell **for approver roles only**, theme toggle, profile menu). Content max width 1400px,
+  16/24/32px gutters, `#f8fafc`-style neutral page background (token `--background`).
+- Menu items (grouped Overview · People · Workspace · Insights · Admin; order unchanged): Dashboard · My Profile · Employees ·
+  Departments · Attendance · Leave · Payroll · Documents · Reports · AI Assistant · Settings (admin). Filtered by role with the
+  same role sets the backend enforces (`lib/nav.ts`). The command palette lists only pages the role may open.
+- **Tokens only:** every colour, radius and shadow is a CSS variable in `frontend/styles/globals.css` with a light **and** a
+  dark value. **No hex in components. No `text-white`/`bg-white`/raw palette classes in new code** (use `bg-brand
+  text-brand-foreground`, `bg-surface`, `text-muted-foreground`, `bg-status-*-bg text-status-*-fg`, …). Accent = indigo;
+  semantic colours are for status only, one fixed colour per status shared by badges, charts and calendars.
+- Type: Inter; title 24/600, section 16/600, body 14/400, meta 12/500; tabular numerals on every metric. Radius 8px controls /
+  12px cards; 8px spacing grid; 1px borders; one soft shadow (`shadow-float`) for floating layers only; motion 150–250ms and
+  honours `prefers-reduced-motion`.
+- **Dark mode:** system by default, toggle in the top bar (`ThemeProvider`, `localStorage` `hr_theme`), applied before first
+  paint. Every new view must be checked in light **and** dark.
+- Reuse the shared system (`DESIGN.md` §4): `components/ui/*` primitives (Radix-based dialog/dropdown/tooltip/popover/switch),
+  `PageHeader`/`Panel`/`StatCard`/`DataTable`/`StatusBadge`/`States`/`Modal`/`Tabs`/`Segmented`/`Toast`. Dialogs and drawers
+  must be Radix (focus trap, Escape, focus returns to the opener). Icons: `lucide-react` only; charts: `recharts` only.
+- Every data view needs **loading (skeleton), empty (with a next action) and error (with retry)** states; every mutation gives
+  toast feedback; forms get inline validation, labels, focus rings and loading/disabled submit buttons.
+- Status badges: colored pills (present/approved/active/paid = green, absent/rejected = red, late/pending = amber, half day =
+  sky, leave = violet, holiday/weekend/inactive = slate) via `StatusBadge`.
+- **No fake data.** A widget without an existing endpoint is derived client-side from existing endpoints or hidden — never
+  invent an API or numbers (e.g. no notification bell for employees, no deltas without history).
+- Dashboards are role-specific (admin / hr / manager / employee feel different). Greeting wording: "Welcome, Admin! Full system
+  overview." / "Welcome, HR! …" / "Welcome, Manager! Team overview." / "Welcome back, <first name>!".
+- Must be usable at 390 px: no horizontal page scroll; tables scroll **inside** their card (scroll containers need `relative`
+  so `sr-only`/absolute children can't widen the page); dialogs become bottom sheets.
+- Accessibility: AA contrast (axe clean in both themes), visible `:focus-visible`, keyboard-operable everything (rows with
+  `onRowClick` are keyboard-activatable), `aria-label` on icon-only buttons.
+- Never show an action the backend will refuse for this user (e.g. approving your own leave, deactivating yourself) — hide it
+  and, where the reason isn't obvious, explain it with a `Notice`.
+- Adding a menu item or changing the shell? Re-run `python scripts/ui_qa.py` (asserts sidebar/rail/drawer per width, role menus).
+- *(Redesign in progress:* Part 1 = shell + Login/Dashboard/Employees; Part 2 = the other 10 pages — see
+  `frontend/REDESIGN_NOTES.md`. Until Part 2 ends, un-redesigned pages rely on a temporary dark-mode "legacy bridge" in
+  `globals.css` (D-028) — don't add new dependencies on it.)
+
+---
 
 ## 8. Things agents MUST do
 
@@ -224,6 +252,9 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - MySQL `SUM()` returns `Decimal`; cast aggregates to `int`/`float` in services before doing arithmetic.
 - `email-validator` rejects reserved TLDs like `.test`/`.example` — use e.g. `@hrtest.dev` for test accounts.
 - BM25 IDF is near zero when only a few chunks are indexed; retrieval therefore also accepts chunks matching ≥ 50 % of query terms (D-004). Re-check thresholds if you change tokenisation.
+- Radix `Dialog` only restores focus to a `<Trigger>`; our dialogs are state-controlled, so `components/ui/dialog.tsx` captures the opener in `onOpenAutoFocus` and restores it on close (`useRestoreFocus`). Don't capture it at mount — `DialogContent` renders while closed.
+- In dark mode the legacy bridge maps Tailwind's `white` to the surface colour, so `text-white` turns dark. Use `text-brand-foreground` / `text-brand-panel-foreground`; check new views in both themes (axe-core via cdnjs works for contrast scans).
+- Don't define a component inside a component's render (e.g. a row-menu `function RowMenu`) — it remounts every render and closes open menus; call a plain render function instead.
 - After large file moves in `frontend/src`, restart `bun dev` — the hot-reload resolver caches missing paths (KI-005).
 - The reference site is a login-walled Angular SPA; its module list/labels/roles were obtained from public JS bundles (see D-002). Don't try to log in to it.
 - Session 1 had no browser automation; session 2 added `scripts/ui_qa.py` (Playwright + installed Edge) and found 9 real

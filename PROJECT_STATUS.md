@@ -1,6 +1,6 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-05, end of session 2** (browser QA, test isolation, demo data, payroll engine)
+Last updated: **2026-10-05, session 3** (frontend redesign Part 1 — awaiting owner approval; backend unchanged since session 2)
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
 
@@ -32,7 +32,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard (HR summary + trend, personal `/dashboard/me`) | ✅ | Live current-month demo data via `generate_demo_month.py` |
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
-| Frontend: HRMS shell + 13 pages | ✅ | **Browser-verified** 4 roles × 1400/1280/390 px (D-020); navbar breakpoints D-025 |
+| Frontend: 13 pages | ✅ | Functionally complete, browser-verified (D-020). **Redesign (D-026) in progress:** Part 1 ✅ done — design system v2, sidebar shell, dark mode, ⌘K palette, Login/Dashboard/Employees redesigned; ⏸ **awaiting owner approval of the direction**; Part 2 🔴 (other 10 pages + quality pass) — `frontend/REDESIGN_NOTES.md` |
 | Automated tests | ✅ | 34 files, 692 checks, all passing; dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
 | README / docs | ✅ | |
@@ -62,7 +62,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard works | ✅ (browser-verified with live data) |
 | Automated tests exist | ✅ |
 | README is complete | ✅ |
-| Git history is maintained | 🟡 All 2026-10-05 work is uncommitted, intentionally — commit when the product owner asks |
+| Git history is maintained | 🟡 Sessions 1–2 are committed on `feature/hr-assistant` (HEAD `943940c` at the start of session 3); the session-3 redesign work is uncommitted, intentionally — commit when the product owner asks |
 
 ## 3. Test status
 
@@ -82,12 +82,23 @@ Frontend: `bunx tsc --noEmit` ✅, `bun run build` ✅.
   "#id", missing form validation, own-row deactivate button, truncated stat labels, wrong leave-balance year label,
   chat leave-balance answer. Details: KNOWN_ISSUES "Resolved".
 
+## 4b. Redesign Part 1 verification (2026-10-05 session 3)
+
+- `bunx tsc --noEmit -p .` ✅ · `bun run build` ✅ (bundle ≈ 923 KB).
+- `python scripts/ui_qa.py` (updated for the sidebar shell): admin/hr/manager/employee × 1440/1024/390 × 14 routes → **0 issues**.
+- Scripted behaviour checks (login validation, theme persistence/no flash, sidebar collapse, ⌘K palette, bell, role gating, mobile
+  drawer focus trap/Escape/focus return, Employees filters/sort/menu/keyboard/view toggle/manager scope): **56/56**.
+- axe-core (WCAG 2.1 A/AA) clean on Login + Dashboard (4 roles) + Employees, light and dark; reduced-motion and focus rings checked.
+- **Not verified:** table pagination (demo data < page size), check-in/out POSTs (would mutate the dev DB), real Google round-trip.
+- Backend/tests untouched, so `scripts/run_tests.py` was **not** re-run (last full run: session 2, 692 checks).
+
 ## 5. Where we are / what's next
 
 **Current position:** All PRD requirements implemented and verified end-to-end in a browser; payroll engine added;
 tests are self-cleaning. Work is uncommitted.
 
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
+0. **Owner review of redesign Part 1**, then redesign Part 2 (pages 4–13 + quality pass + delete the legacy bridge).
 1. Commit in logical commits (when the product owner asks).
 2. "Mark as paid" for payroll rows; review the LOP policy for unrecorded days with HR (KI-023).
 3. PRD §30 question-bank test file (20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG).
@@ -100,6 +111,7 @@ tests are self-cleaning. Work is uncommitted.
 - **2026-10-05 session 1:** Persistent docs; HRMS frontend rebuild (13 pages); employees CRUD, departments, attendance
   check-in/out/daily/records, leave balance/list/cancel + manager scope fix, payroll list, users admin, dashboard/me,
   leave report, RAG + documents, prompt-injection guardrail, chat sources/history/audit; 654 checks.
+- **2026-10-05 session 3:** Frontend redesign Part 1 (D-026/27/28): tokens + dark mode, Radix primitives, sidebar shell, ⌘K palette, Login/Dashboard/Employees; docs `frontend/DESIGN.md`, `frontend/REDESIGN_NOTES.md`; `ui_qa.py` updated.
 - **2026-10-05 session 2:** Sanity check of the uncommitted tree (no dangling `retrievers` imports); stale "Build Failed"
   root-caused (KI-005); full browser QA with 9 fixes; test isolation (D-023); current-month demo data (D-024); payroll
   engine + pro-rated OT report (D-021); self-approval rule confirmed (D-022); 692 checks.
