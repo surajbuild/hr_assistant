@@ -48,6 +48,8 @@ FastAPI (:8000) ── JWT auth (get_current_user) ── RBAC (require_role + e
          1. sanitize + prompt-injection guardrail (app/ai/guardrails.py)   → refuse, log
          2. intent router (app/ai/router.py: EMPLOYEE / ATTENDANCE / LEAVE / SALARY / POLICY / GENERAL / UNKNOWN)
          3a. data intents  → controlled service calls + RBAC check (check_rbac_access) → verified context
+             (profiles, directory, department headcount, attendance summaries, overtime/late/absence rankings,
+              leave balances, payslips, payroll summary; periods like "this month" / "September" resolved per D-029)
          3b. POLICY/UNKNOWN → RAG search over uploaded docs (app/rag/retriever.py) → fallback app/data/policies.json
          4. LLM (app/ai/llm.py) phrases the verified context, with anti-hallucination prompt (app/ai/prompts.py)
          5. chat_logs row (user, question, intent, source, answer, latency, error)
@@ -123,10 +125,13 @@ payroll** for the previous month to create payslips from that attendance.
 Upload the files in `sample_documents/` as HR on the Documents page to demo policy Q&A (e.g. *"How many days can I work from home?"*).
 
 ### PRD demo script (§35)
-1. Log in as **aman** → AI Assistant → *"How many days was I present in August 2024?"* → 22 days (attendance_database).
-2. *"What is Rahul's salary?"* → access denied.
+1. Log in as **aman** → AI Assistant → *"What is my attendance this month?"* (current month after
+   `generate_demo_month.py`; otherwise the latest month with data, and the answer says so) — or the fixed seed question
+   *"How many days was I present in August 2024?"* → 22 days (attendance_database).
+2. *"What is another employee's salary?"* or *"What is Rahul's salary?"* → access denied.
 3. *"What is the leave policy?"* → answer + source.
-4. Log in as **neha.hr** → *"Who worked the most overtime in September 2024?"* → Rahul, 18 h 35 m.
+4. Log in as **neha.hr** → *"Who worked the most overtime this month?"* (ranking computed in Python), or with seed data
+   *"Who worked the most overtime in September 2024?"* → Rahul, 18 h 35 m.
 5. Documents → upload `sample_documents/Work From Home Policy.txt` → ask *"How many days can I work from home in a month?"* → 8 days, source "Work From Home Policy.txt".
 6. (Extra) As **neha.hr**: Payroll → pick last month → **Generate payroll** → LOP / PF / overtime computed from attendance.
 
@@ -226,7 +231,7 @@ documents/               uploaded files (git-ignored)
 
 ```powershell
 .venv\Scripts\activate
-python scripts/run_tests.py            # all 34 test files (692 checks, ~2 min)
+python scripts/run_tests.py            # all 35 test files (769 checks, ~2 min)
 python scripts/run_tests.py rag hrms   # subset by filename
 python tests/test_rag.py               # one file
 ```
@@ -239,7 +244,9 @@ python scripts/db_snapshot.py diff before.json     # -> "Database unchanged"
 python scripts/db_snapshot.py isolate              # which test file (if any) changes the DB
 ```
 The LLM is always mocked.
-Key suites: `test_hrms_endpoints.py` (HRMS APIs, 88 checks), `test_payroll.py` (payroll engine, 36), `test_rag.py` (RAG + guardrails, 38),
+Key suites: `test_question_bank.py` (**PRD §30 question bank**: 22 normal / 11 incorrect / 13 security / 13 calculation
+questions + 11 RAG checks through `POST /chat`, expected numbers computed from MySQL in the test),
+`test_hrms_endpoints.py` (HRMS APIs, 88 checks), `test_payroll.py` (payroll engine, 36), `test_rag.py` (RAG + guardrails, 38),
 `test_rbac_matrix.py` (permissions, 77), `test_chat_api.py`, `test_ai_router.py`, `test_reports_api.py`.
 
 Frontend: `cd frontend && bunx tsc --noEmit -p . && bun run build`.

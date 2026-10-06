@@ -1,6 +1,6 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-05, session 3** (frontend redesign Part 1 — awaiting owner approval; backend unchanged since session 2)
+Last updated: **2026-10-06, session 4** (PRD §30 question bank + AI router fixes; redesign Part 1 still awaiting owner approval)
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
 
@@ -25,7 +25,8 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | **Payroll engine** (`POST /salary/generate`, UI dialog) | ✅ | LOP / PF / OT pay, idempotent, paid rows locked (D-021) |
 | "Mark as paid" action | 🔴 | P2 |
 | Document upload + RAG indexing | ✅ | PDF (page-aware), DOCX, TXT; versioning; archive |
-| AI chat: intent router + DB tools | ✅ | Leave tool now includes the calculated balance |
+| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent), department headcount, company payroll summary, "this month"/month-only periods (D-029, D-030) |
+| PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 22 normal / 11 incorrect / 13 security / 13 calculation / 11 RAG (70 checks) |
 | AI chat: policy Q&A via RAG with sources | ✅ | D-009 |
 | Prompt-injection protection | ✅ | D-011 |
 | Chat logging + history + admin audit log | ✅ | |
@@ -33,7 +34,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
 | Frontend: 13 pages | ✅ | Functionally complete, browser-verified (D-020). **Redesign (D-026) in progress:** Part 1 ✅ done — design system v2, sidebar shell, dark mode, ⌘K palette, Login/Dashboard/Employees redesigned; ⏸ **awaiting owner approval of the direction**; Part 2 🔴 (other 10 pages + quality pass) — `frontend/REDESIGN_NOTES.md` |
-| Automated tests | ✅ | 34 files, 692 checks, all passing; dev DB unchanged by a run (D-023) |
+| Automated tests | ✅ | 35 files, 769 checks, all passing; dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
 | README / docs | ✅ | |
 | Deployment | 🔴 | P2 (Docker compose) |
@@ -53,7 +54,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Overtime calculations are correct | ✅ |
 | AI chatbot works | ✅ (verified live in the browser) |
 | RAG works | ✅ |
-| PDF/DOCX documents can be indexed | ✅ (DOCX + TXT in tests; PDF parser implemented, no real-PDF test yet) |
+| PDF/DOCX documents can be indexed | ✅ (PDF with page numbers, DOCX and TXT tested end to end in `test_question_bank.py`) |
 | AI provides document/source references | ✅ |
 | Hallucination handling is implemented | ✅ |
 | Prompt injection protection is implemented | ✅ |
@@ -62,13 +63,16 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard works | ✅ (browser-verified with live data) |
 | Automated tests exist | ✅ |
 | README is complete | ✅ |
-| Git history is maintained | 🟡 Sessions 1–2 are committed on `feature/hr-assistant` (HEAD `943940c` at the start of session 3); the session-3 redesign work is uncommitted, intentionally — commit when the product owner asks |
+| Git history is maintained | ✅ Sessions 1–3 are committed on `feature/hr-assistant` (HEAD `c4b0c76` at the start of session 4, tree clean; `main` is far behind). Session-4 work is uncommitted — commit when the product owner asks |
 
 ## 3. Test status
 
-Final full run, 2026-10-05 session 2 (`python scripts/run_tests.py`): **34 files, 692 checks passed, 0 failed.**
-`scripts/db_snapshot.py` before/after the run: **"Database unchanged (all tables + documents folder identical)."**
-Frontend: `bunx tsc --noEmit` ✅, `bun run build` ✅.
+Final full run, 2026-10-06 session 4 (`python scripts/run_tests.py`): **35 files, 769 checks passed, 0 failed.**
+`scripts/db_snapshot.py` snapshot taken before the session's first run vs. after the last: **"Database unchanged (all tables +
+documents folder identical)."** (Baseline at session start: 34 files, 692 checks, all passing.)
+The new question bank was also run against the **old** router: 20 of its checks failed there (payroll crash, salary of
+"another employee" answered, "this month" ignored, rankings/headcount missing) — so it detects the regressions it targets.
+Frontend: untouched this session (last: `bunx tsc --noEmit` ✅, `bun run build` ✅ in session 3).
 
 ## 4. Browser verification (2026-10-05 session 2)
 
@@ -94,15 +98,15 @@ Frontend: `bunx tsc --noEmit` ✅, `bun run build` ✅.
 
 ## 5. Where we are / what's next
 
-**Current position:** All PRD requirements implemented and verified end-to-end in a browser; payroll engine added;
-tests are self-cleaning. Work is uncommitted.
+**Current position:** All PRD requirements implemented; the PRD §30 question bank exists and passes; PRD §35 demo
+questions 1–5 are covered by automated tests (LLM mocked). Session-4 changes are uncommitted.
 
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
 0. **Owner review of redesign Part 1**, then redesign Part 2 (pages 4–13 + quality pass + delete the legacy bridge).
 1. Commit in logical commits (when the product owner asks).
-2. "Mark as paid" for payroll rows; review the LOP policy for unrecorded days with HR (KI-023).
-3. PRD §30 question-bank test file (20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG).
-4. Attendance corrections, holidays calendar, pagination, ≥32-byte JWT secret, Docker deployment.
+2. Security hardening: ≥32-byte JWT/session secrets + fail fast without them (KI-003, KI-011); rate limiting on login/chat.
+3. Owner decisions: team-scoped chat rankings for managers (KI-029); LOP for unrecorded days (KI-023).
+4. "Mark as paid", attendance corrections, holidays calendar, pagination, architecture + AI docs (PRD §33), Docker deployment.
 
 ## 6. History
 
@@ -112,6 +116,9 @@ tests are self-cleaning. Work is uncommitted.
   check-in/out/daily/records, leave balance/list/cancel + manager scope fix, payroll list, users admin, dashboard/me,
   leave report, RAG + documents, prompt-injection guardrail, chat sources/history/audit; 654 checks.
 - **2026-10-05 session 3:** Frontend redesign Part 1 (D-026/27/28): tokens + dark mode, Radix primitives, sidebar shell, ⌘K palette, Login/Dashboard/Employees; docs `frontend/DESIGN.md`, `frontend/REDESIGN_NOTES.md`; `ui_qa.py` updated.
+- **2026-10-06 session 4:** PRD §30 question bank (`tests/test_question_bank.py`, 70 checks incl. a real 2-page PDF); AI
+  router fixes it exposed — period resolution (D-029), rankings/headcount/unnamed-colleague/company-payroll tools (D-030),
+  payroll-summary crash (R-019), "another employee's salary" leak of own data (R-020); 769 checks.
 - **2026-10-05 session 2:** Sanity check of the uncommitted tree (no dangling `retrievers` imports); stale "Build Failed"
   root-caused (KI-005); full browser QA with 9 fixes; test isolation (D-023); current-month demo data (D-024); payroll
   engine + pro-rated OT report (D-021); self-approval rule confirmed (D-022); 692 checks.

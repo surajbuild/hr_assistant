@@ -294,3 +294,46 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
 - **Reason:** the theme toggle is global; shipping a half-broken dark mode between sessions would mislead the owner's review.
 - **Impact:** **Delete the bridge and the legacy aliases at the end of Part 2** (see `REDESIGN_NOTES.md` §4). New code must not rely
   on it: never use `text-white`/`bg-white`/raw palette classes — use tokens (`bg-brand text-brand-foreground`, `bg-surface`, …).
+
+### D-029 — How the AI assistant resolves time periods ("this month", "September", "last month")
+- **Date:** 2026-10-06
+- **Decision:** `router.resolve_period()` decides the period of every attendance / ranking / salary question:
+  - month **and** year given → used as given;
+  - month without a year → the most recent such month (not in the future) that has records — attendance months for
+    attendance questions, payroll months for salary questions; with no records at all, the most recent past occurrence
+    by calendar;
+  - "this/current month" → the current month; if the current month has no records yet, the latest month with data, and the
+    context carries a note saying so (the LLM must tell the user which month it describes);
+  - "last/previous month" → the previous calendar month; a year alone → the whole year; nothing → all recorded dates
+    (company payroll summaries: the latest payroll month).
+  - `extract_month_and_year()` now returns `year=None` when no year is written; "May I…" is not the month of May.
+- **Reason:** The old router hard-coded 2024 for a month without a year (KI-008) and ignored "this month", so PRD demo 1
+  ("What is my attendance this month?") and demo 4 ("Who worked the most overtime this month?") answered with all-time totals.
+  Since D-024 the demo data has 2026 months too, so "September" was ambiguous.
+- **Alternatives:** Always the calendar year (wrong for the 2024 seed dataset); always 2024 (wrong for live data); asking a
+  follow-up question (the chat is single-turn).
+- **Impact:** Tests that expect seed numbers must write the year ("August 2024"); `test_chat_api.py`, `test_ai_router.py` and
+  `scripts/smoke_test_chat.py` were updated. Period queries go through `attendance_service.get_months_with_data` /
+  `salary_service.get_payroll_periods`.
+
+### D-030 — Chat answers for rankings, headcount, unnamed colleagues and company payroll (no permission rule changed)
+- **Date:** 2026-10-06
+- **Decision:** New controlled tools in `app/ai/router.py`, each applying the permission rule that already exists for the
+  same data over REST:
+  - **Rankings** — "who worked the most overtime / was late the most / was absent the most" →
+    `attendance_service.rank_employees` (top 5, ties share a rank). HR/Admin only, like the existing overtime ranking.
+  - **Department headcount** — "How many employees are in Engineering?" → `employee_service.list_departments`; HR/Admin
+    company-wide, manager limited to self + direct reports, employee refused (same as `GET /departments`).
+  - **Unnamed other person** — "another employee's salary", "a colleague's leave": refused when the role may not see that
+    kind of data for others (salary: everyone but HR/Admin; attendance/leave: employees); otherwise the user is asked to name
+    the person. Previously the router silently fell back to the caller's own record.
+  - **Company payroll** — "total payroll", "all salaries", "payroll for 2024" with nobody named → HR/Admin get the payroll
+    **summary** only (never a per-person salary table, AGENTS.md §3.6); others are refused.
+  - "Show all employee personal information" → the directory rule (HR/Admin only).
+  - A person/period with no records → explicit "not available for the requested period" context (PRD §29) instead of zeros.
+- **Reason:** PRD §30 examples and the §35 demo 2 question were mis-routed (UNKNOWN) or answered with the caller's own data;
+  the HR payroll summary crashed with a `TypeError` (the router read summary keys that `get_salary_summary` never returned).
+  Found by the new `tests/test_question_bank.py`.
+- **Alternatives:** Team-scoped rankings for managers — not done: it would change the existing HR/Admin-only ranking rule, which
+  needs the product owner (AGENTS.md §8). Open question, see KI-029.
+- **Impact:** `tests/test_question_bank.py` (PRD §30 bank, 70 checks) guards all of the above.

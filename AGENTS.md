@@ -227,7 +227,9 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - Windows dev machine; shell is PowerShell / Git Bash. `requirements.txt` was historically UTF-16 — keep it **UTF-8**.
 - The LLM provider is OpenRouter (`LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_MODEL=openai/gpt-4o-mini`). OpenRouter
   does not reliably offer an embeddings endpoint, which is why RAG uses local TF-IDF (D-004).
-- Seed data is from 2024; "this month" questions for the demo resolve to the latest month that has data (see router).
+- Seed data is from 2024; "this month" questions resolve to the current month, or to the latest month that has data when
+  the current month has none; a month without a year means the most recent such month with records (`resolve_period`, D-029).
+  Tests that expect seed numbers must name the year ("August 2024") — the demo generator adds newer months.
 - Frontend dev server: Bun (`bun dev`, port 3000). Backend: uvicorn port 8000.
 - Agents start servers from a console-less shell: there `uvicorn --reload` never restarts its worker (KI-022) — run
   `uvicorn app.main:app --port 8000` without `--reload` and restart it after backend edits; kill leftover
@@ -265,3 +267,6 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - The AI router only knows what its tool puts in the context: when a question type returns "not available", check the
   router branch builds the needed numbers (the leave-balance bug was exactly this).
 - When demo data grows, hard-coded expectations like "latest payroll month = Sep 2024" break — derive them from the DB.
+- `tests/test_question_bank.py` is the AI regression bank (PRD §30). When a chat question is answered wrongly, add it there
+  first (failing), then fix the router. Check refusals with "LLM not called", not only with the answer text — the old router
+  answered "another employee's salary" with the caller's own salary, which looked fine at a glance.

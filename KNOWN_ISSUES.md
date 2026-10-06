@@ -14,7 +14,8 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-005 | Bun dev server can't resolve **new** files imported via the `@/` alias until restarted | 🟡 | Frontend DX | Root cause found — restart `bun dev` after adding a file |
 | KI-006 | Frontend bundle ≈ 780 KB minified, no code-splitting | 🟡 | Frontend perf | Open |
 | KI-007 | No pagination on list endpoints/tables | 🟡 | API / UI | Open |
-| KI-008 | Rule-based intent router misses some phrasings; month without year defaults to 2024 | 🟠 | AI | Open |
+| KI-008 | Rule-based intent router misses some phrasings; month without year defaulted to 2024 | 🟡 | AI | Partly fixed 2026-10-06 — period resolution D-029; PRD §30 phrasings covered by `test_question_bank.py`; unusual wording can still miss (LLM-assisted fallback = P2) |
+| KI-029 | Managers can't ask the chat for team rankings ("who in my team was late the most?") — rankings are HR/Admin only | 🟡 | AI / Permissions | Open — needs a product-owner decision (D-030) |
 | KI-009 | Scanned/image-only PDFs cannot be indexed (no OCR) | 🟡 | RAG | Open |
 | KI-010 | Lexical RAG: synonyms ("remote work" vs "work from home") may not match | 🟠 | RAG | Open |
 | KI-011 | `SessionMiddleware` falls back to a hard-coded secret if env vars are missing | 🟠 | Security | Open |
@@ -73,8 +74,16 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 
 ### KI-008 — Intent router limitations
 - `app/ai/router.py` is keyword-based. UNKNOWN questions are tried against documents (D-009) but data questions with
-  unusual wording may get a generic answer. `extract_month_and_year` defaults the year to **2024** when only a month is
-  given (demo dataset). **Proposed:** default year = latest year with data; LLM-assisted entity extraction fallback (P2).
+  unusual wording may get a generic answer.
+- **Fixed 2026-10-06:** the hard-coded 2024 year default and the ignored "this month" (D-029); rankings, headcount, unnamed
+  colleagues and company payroll questions (D-030). `tests/test_question_bank.py` is the regression bank — add a failing
+  question there first when a new phrasing is reported.
+- **Still open:** LLM-assisted intent/entity extraction fallback (P2); multi-turn follow-ups ("and in August?").
+
+### KI-029 — No team rankings for managers in chat
+- Rankings ("who was late the most") are HR/Admin only, as the original overtime ranking was. A manager may already see each
+  team member's attendance, so a team-scoped ranking (`rank_employees(..., scope_ids=get_scope_employee_ids(...))`) would be
+  a small change — but it changes a permission rule, so ask the product owner first (AGENTS.md §8).
 
 ### KI-010 — Lexical retrieval
 - BM25 matches stemmed words, not meaning. **Proposed:** synonym map for common HR terms, or dense embeddings
@@ -132,3 +141,7 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | R-016 | Admin/HR saw a "Deactivate" button on their own row (API refuses) | 2026-10-05 s2 | Hidden on own row |
 | R-017 | Phone dashboard stat labels truncated; leave-balance card said "Current calendar year" for 2024 data | 2026-10-05 s2 | Labels wrap (2 lines); subtitle shows the actual year |
 | R-018 | Test suite wiped demo data, uploaded documents and chat logs | 2026-10-05 s2 | D-023 |
+| R-019 | Chat "What is the total payroll for September 2024?" (HR) → 500 `TypeError` (router read non-existent summary keys) | 2026-10-06 | Correct keys; payroll summary covered by `test_question_bank.py` |
+| R-020 | "What is another employee's salary?" (PRD demo 2) / "Show all salaries" answered with the caller's own salary | 2026-10-06 | Refused for non-HR roles (D-030) |
+| R-021 | "What is my attendance this month?" / "…most overtime this month?" (PRD demos 1, 4) answered with all-time totals | 2026-10-06 | `resolve_period` (D-029) |
+| R-022 | "Who was late the most?", "How many employees are in Engineering?", "Show all employee personal information" → UNKNOWN | 2026-10-06 | Ranking, headcount and directory tools (D-030) |

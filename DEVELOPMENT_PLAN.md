@@ -3,7 +3,7 @@
 > Mark tasks `[x]` when done — never delete them. Add new tasks where they belong.
 > Priorities: **P0** blocker · **P1** critical (PRD acceptance) · **P2** important · **P3** nice-to-have.
 
-Last updated: 2026-10-05 (end of session 2)
+Last updated: 2026-10-06 (session 4 — PRD §30 question bank + AI router fixes)
 
 ---
 
@@ -68,7 +68,8 @@ Dependencies:
 
 ### Tests
 - [x] Tests for new endpoints (employees CRUD, departments, attendance daily/check-in, leaves list/balance/cancel/manager scope, salary list, documents/RAG, chat sources, users, dashboard/me)
-- [ ] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — currently partially covered by `test_ai_router.py`, `test_chat_api.py`, `test_rbac_matrix.py`, `test_rag.py`
+- [x] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — `tests/test_question_bank.py`
+      (22 / 11 / 13 / 13 / 11 = 70 checks, 2026-10-06); fixed the router gaps it exposed (D-029, D-030, R-019…R-022)
 
 ## Frontend redesign (D-026) — product-owner request, 2026-10-05
 
@@ -85,7 +86,9 @@ Dependencies:
 - [ ] Synonym map or dense embeddings for RAG (KI-010)
 - [x] Use working days for leave length in the AI router too (KI-020) — and the LEAVE tool now includes the balance
 - [ ] Code-split the frontend bundle (KI-006); keyboard-accessible table rows (KI-018)
-- [ ] Default the AI router's month-only questions to the latest year with data instead of 2024 (KI-008)
+- [x] Default the AI router's month-only questions to the latest year with data instead of 2024 (KI-008) — plus "this month" /
+      "last month" (D-029, 2026-10-06)
+- [ ] Team-scoped chat rankings for managers — **needs product-owner decision** (KI-029)
 
 - [x] Google OAuth callback redirects to the frontend with the token when started with `?next=frontend` (D-014) — real-account test pending, KI-004
 - [ ] LLM-assisted intent/entity extraction as fallback when rule-based router returns UNKNOWN
