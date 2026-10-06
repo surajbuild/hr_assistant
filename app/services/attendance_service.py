@@ -9,15 +9,16 @@ Contains reusable Python functions for:
 - Aggregating attendance statistics / summaries (with date filtering)
 - Self-service check-in / check-out with late & overtime calculation
 - Company daily attendance view and filtered record listing (scoped by role)
+- Months that have data and employee rankings (overtime / late / absent) for the AI router
 
 This module is independent of FastAPI HTTP concerns (no Request, HTTPException,
 or status codes) so that it can be invoked by both API routers and AI/tool agents.
 """
 
 from datetime import date, datetime, time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import case, func
+from sqlalchemy import case, extract, func
 from sqlalchemy.orm import Session
 
 from app.database.models import Attendance, AttendanceStatus, Employee, EmployeeStatus
@@ -253,6 +254,94 @@ def get_attendance_summary(
 
 
 # ---------------------------------------------------------------------------
+# Periods & Rankings (used by the AI router's controlled tools)
+# ---------------------------------------------------------------------------
+
+RANKING_METRICS = ("overtime", "late", "absent")
+
+
+def get_months_with_data(db: Session) -> List[Tuple[int, int]]:
+    """Sorted (year, month) pairs that have at least one attendance record."""
+    rows = (
+        db.query(extract("year", Attendance.attendance_date), extract("month", Attendance.attendance_date))
+        .distinct()
+        .all()
+    )
+    return sorted((int(y), int(m)) for y, m in rows)
+
+
+def rank_employees(
+    db: Session,
+    metric: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Rank employees by an attendance metric, highest first. Employees with a zero value are left out.
+
+    metric:
+      - "overtime": total overtime minutes
+      - "late":     days with late_minutes > 0 (ties broken by total late minutes)
+      - "absent":   days with status 'absent'
+
+    Returns dicts: employee_id, employee_code, employee_name, department, value, overtime_minutes,
+    late_days, late_minutes, absent_days.
+    """
+    if metric not in RANKING_METRICS:
+        raise ValueError(f"Unknown ranking metric: {metric}")
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    overtime = func.sum(Attendance.overtime_minutes)
+    late_days = func.sum(case((Attendance.late_minutes > 0, 1), else_=0))
+    late_minutes = func.sum(Attendance.late_minutes)
+    absent_days = func.sum(case((Attendance.status == AttendanceStatus.ABSENT.value, 1), else_=0))
+
+    query = (
+        db.query(
+            Employee.id, Employee.employee_code, Employee.name, Employee.department,
+            overtime.label("overtime_minutes"),
+            late_days.label("late_days"),
+            late_minutes.label("late_minutes"),
+            absent_days.label("absent_days"),
+        )
+        .join(Attendance, Attendance.employee_id == Employee.id)
+    )
+    if scope_ids is not None:
+        query = query.filter(Employee.id.in_(scope_ids or {-1}))
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+
+    order = {
+        "overtime": [overtime.desc()],
+        "late": [late_days.desc(), late_minutes.desc()],
+        "absent": [absent_days.desc()],
+    }[metric]
+    rows = query.group_by(Employee.id).order_by(*order, Employee.name.asc()).all()
+
+    ranked = []
+    for row in rows:
+        item = {
+            "employee_id": row.id,
+            "employee_code": row.employee_code,
+            "employee_name": row.name,
+            "department": row.department,
+            "overtime_minutes": int(row.overtime_minutes or 0),
+            "late_days": int(row.late_days or 0),
+            "late_minutes": int(row.late_minutes or 0),
+            "absent_days": int(row.absent_days or 0),
+        }
+        item["value"] = {"overtime": item["overtime_minutes"], "late": item["late_days"], "absent": item["absent_days"]}[metric]
+        if item["value"] > 0:
+            ranked.append(item)
+    return ranked[:limit]
+
+
+# ---------------------------------------------------------------------------
 # Company Attendance Rules (mirrors app/data/policies.json — see D-007)
 # ---------------------------------------------------------------------------
 
@@ -263,20 +352,26 @@ STANDARD_WORKING_MINUTES = 480   # 8h of work (9:00–18:00 minus 1h lunch)
 HALF_DAY_THRESHOLD_MINUTES = 240  # fewer than 4h worked → half day
 
 # Fixed-date mandatory national holidays (app/data/policies.json → holiday_rules). Paid, non-working days.
+# They recur every year. Holidays HR declares for one date live in the `holidays` table (D-034) —
+# pass them as `extra_holidays` (holiday_service.get_declared_holiday_dates).
 COMPANY_HOLIDAYS = {(1, 26): "Republic Day", (8, 15): "Independence Day", (10, 2): "Gandhi Jayanti"}
 
 
-def is_working_day(day: date) -> bool:
-    """Mon–Fri and not a company holiday."""
-    return day.weekday() < 5 and (day.month, day.day) not in COMPANY_HOLIDAYS
+def is_working_day(day: date, extra_holidays: Optional[Set[date]] = None) -> bool:
+    """Mon–Fri, not a national holiday and not one of `extra_holidays` (declared company holidays)."""
+    return (
+        day.weekday() < 5
+        and (day.month, day.day) not in COMPANY_HOLIDAYS
+        and not (extra_holidays and day in extra_holidays)
+    )
 
 
-def working_days_between(start: date, end: date) -> List[date]:
+def working_days_between(start: date, end: date, extra_holidays: Optional[Set[date]] = None) -> List[date]:
     """All working days in [start, end]."""
     days = []
     current = start
     while current <= end:
-        if is_working_day(current):
+        if is_working_day(current, extra_holidays):
             days.append(current)
         current = date.fromordinal(current.toordinal() + 1)
     return days
@@ -463,8 +558,13 @@ def list_attendance_records(
     end_date: Optional[date] = None,
     status: Optional[str] = None,
     limit: int = 1000,
-) -> List[Dict[str, Any]]:
-    """Filtered attendance records joined with employee name/department."""
+    offset: int = 0,
+    with_total: bool = False,
+) -> Any:
+    """
+    Filtered attendance records joined with employee name/department, newest first.
+    Returns the page as a list, or {"total", "items"} when `with_total` is set (pagination).
+    """
     if start_date and end_date and start_date > end_date:
         raise InvalidDateRangeError("start_date cannot be after end_date.")
 
@@ -480,8 +580,14 @@ def list_attendance_records(
     if status:
         query = query.filter(Attendance.status == status)
 
-    rows = query.order_by(Attendance.attendance_date.desc(), Employee.name.asc()).limit(limit).all()
-    return [
+    total = query.count() if with_total else None
+    rows = (
+        query.order_by(Attendance.attendance_date.desc(), Employee.name.asc(), Attendance.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    items = [
         {
             "id": att.id,
             "employee_id": emp.id,
@@ -498,3 +604,4 @@ def list_attendance_records(
         }
         for att, emp in rows
     ]
+    return {"total": total, "items": items} if with_total else items

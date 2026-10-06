@@ -19,14 +19,18 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database.models import ChatLog
+from app.utils import rate_limit
 
 
 class TrackingClient(TestClient):
-    def __init__(self, app, db: Session, **kwargs):
+    def __init__(self, app, db: Session, reset_chat_rate_limit: bool = True, **kwargs):
         super().__init__(app, **kwargs)
         self._db = db
         self.chat_start_id: int = db.query(func.coalesce(func.max(ChatLog.id), 0)).scalar() or 0
         self.chat_questions: Set[str] = set()
+        # Test files send dozens of chat messages within seconds; the per-user limit (D-031) has its
+        # own test (test_security_hardening.py), which passes reset_chat_rate_limit=False.
+        self.reset_chat_rate_limit = reset_chat_rate_limit
 
     def post(self, url, *args, **kwargs):  # type: ignore[override]
         if str(url).rstrip("/").endswith("/chat"):
@@ -34,6 +38,8 @@ class TrackingClient(TestClient):
             text: Optional[str] = body.get("message") if body.get("message") is not None else body.get("question")
             if text is not None:
                 self.chat_questions.add(text)
+            if self.reset_chat_rate_limit:
+                rate_limit.chat_limiter.reset()
         return super().post(url, *args, **kwargs)
 
     def cleanup_chat_logs(self, db: Optional[Session] = None, extra_questions: Iterable[str] = ()) -> int:

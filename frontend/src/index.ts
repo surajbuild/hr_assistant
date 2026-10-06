@@ -3,11 +3,12 @@
  *
  * - `/api/*`  → proxied to the FastAPI backend (`BACKEND_URL`, default http://localhost:8000)
  *               with the `/api` prefix stripped. Method, body (streamed), query string and the
- *               relevant headers are forwarded; the backend response is passed through unchanged
+ *               relevant headers are forwarded (plus X-Forwarded-For = the real client IP, for the
+ *               backend's login rate limit); the backend response is passed through unchanged
  *               (status, content-type, content-disposition for xlsx downloads, ...).
  * - `/*`      → the React SPA (client-side routing in src/lib/router.tsx).
  */
-import { serve } from "bun";
+import { serve, type Server } from "bun";
 import index from "./index.html";
 
 const BACKEND = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/+$/, "");
@@ -21,7 +22,7 @@ const FORWARD_REQUEST_HEADERS = ["content-type", "authorization", "accept", "acc
  */
 const DROP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding", "connection"]);
 
-async function proxyApi(req: Request): Promise<Response> {
+async function proxyApi(req: Request, server: Server<unknown>): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/api/, "") || "/";
   const target = `${BACKEND}${path}${url.search}`;
@@ -31,6 +32,10 @@ async function proxyApi(req: Request): Promise<Response> {
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
+  // The backend rate-limits logins per client IP (D-031). Overwrite — never append to — whatever
+  // X-Forwarded-For the browser sent, so a client cannot choose its own IP.
+  const clientIp = server.requestIP(req)?.address;
+  if (clientIp) headers.set("x-forwarded-for", clientIp);
 
   const hasBody = !["GET", "HEAD"].includes(req.method);
 

@@ -83,7 +83,9 @@ async function errorFromResponse(res: Response, path: string): Promise<ApiError>
   }
   if (res.status === 401) handleUnauthorized(path);
   const fallback =
-    res.status === 403
+    res.status === 429
+      ? "Too many requests. Please wait a moment and try again."
+      : res.status === 403
       ? "You do not have permission to perform this action."
       : res.status === 404
         ? "The requested resource was not found."
@@ -162,8 +164,22 @@ export function saveBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** One page of a paginated list endpoint (D-035): rows + total from the `X-Total-Count` header. */
+export interface Page<T> {
+  items: T[];
+  total: number;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
+
+  /** GET a list endpoint that supports `limit`/`offset` and reports `X-Total-Count`. */
+  async getPage<T>(path: string): Promise<Page<T>> {
+    const res = await rawRequest(path, { method: "GET" });
+    const items = (await res.json()) as T[];
+    const header = Number(res.headers.get("x-total-count"));
+    return { items, total: Number.isFinite(header) && res.headers.has("x-total-count") ? header : items.length };
+  },
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),

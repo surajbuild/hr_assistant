@@ -32,7 +32,10 @@ from sqlalchemy import text  # noqa: E402
 
 from app.database.connection import engine  # noqa: E402
 
-TABLES = ["employees", "users", "attendance", "leaves", "salary", "documents", "document_chunks", "chat_logs"]
+TABLES = [
+    "employees", "users", "attendance", "leaves", "salary", "documents", "document_chunks", "chat_logs",
+    "holidays", "attendance_corrections",
+]
 DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR") or ROOT / "documents")
 
 

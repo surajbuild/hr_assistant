@@ -9,35 +9,34 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 |---|---|---|---|---|
 | KI-001 | Demo data goes stale every month (dashboard falls back to the last date with data) | 🟡 | Seed / Dashboard | Mitigated — run `scripts/generate_demo_month.py` monthly (D-024) |
 | KI-002 | Tests run against the dev database (no separate test DB) | 🟡 | Tests | Mitigated — tests leave it byte-identical (D-023); separate DB still P2 |
-| KI-003 | JWT secret in local `.env` is shorter than 32 bytes (PyJWT warning) | 🟠 | Security | Open |
-| KI-004 | Google OAuth browser flow not verified with a real Google account | 🟡 | Auth | Partially tested (token hand-off `#token=` verified in browser) |
+| KI-004 | Google OAuth browser flow not verified with a real Google account | 🟡 | Auth | Partially tested (token hand-off `#token=` verified; since session 5 the login starts through the `/api` proxy — 302 + session cookie verified) |
 | KI-005 | Bun dev server can't resolve **new** files imported via the `@/` alias until restarted | 🟡 | Frontend DX | Root cause found — restart `bun dev` after adding a file |
 | KI-006 | Frontend bundle ≈ 780 KB minified, no code-splitting | 🟡 | Frontend perf | Open |
-| KI-007 | No pagination on list endpoints/tables | 🟡 | API / UI | Open |
-| KI-008 | Rule-based intent router misses some phrasings; month without year defaults to 2024 | 🟠 | AI | Open |
+| KI-007 | No pagination on list endpoints/tables | 🟡 | API / UI | Partly done 2026-10-06 (D-035): `/employees`, `/attendance/records`, `/chat/logs`; UI uses it for Attendance records + audit log. `/leaves`, `/documents`, `/users`, `/salary` still return everything (small today) |
+| KI-008 | Rule-based intent router misses some phrasings; month without year defaulted to 2024 | 🟡 | AI | Partly fixed 2026-10-06 — period resolution D-029; PRD §30 phrasings covered by `test_question_bank.py`; unusual wording can still miss (LLM-assisted fallback = P2) |
 | KI-009 | Scanned/image-only PDFs cannot be indexed (no OCR) | 🟡 | RAG | Open |
 | KI-010 | Lexical RAG: synonyms ("remote work" vs "work from home") may not match | 🟠 | RAG | Open |
-| KI-011 | `SessionMiddleware` falls back to a hard-coded secret if env vars are missing | 🟠 | Security | Open |
-| KI-012 | HR cannot edit/correct an existing attendance record (create only) | 🟡 | Attendance | Open |
 | KI-013 | Settings → "Company Policy" tab shows hard-coded values duplicated from `policies.json` | 🟡 | Frontend | Open |
 | KI-017 | `httpx2` in requirements looks odd but is imported by Starlette's TestClient here | 🟡 | Dependencies | Documented |
 | KI-018 | Clickable table rows are not keyboard-focusable (row action buttons are) | 🟡 | Accessibility | Fixed in `DataTable` (rows with `onRowClick` are focusable, Enter/Space activate) — verified on Employees; other tables get it automatically |
 | KI-019 | Check-in/out uses the server's local clock; no timezone setting | 🟡 | Attendance | Open |
 | KI-021 | Manager `/leaves` list includes the manager's own leaves | 🟡 | Leave | Mitigated (UI hides actions + explains, API 403 — D-022) |
 | KI-022 | `uvicorn --reload` never restarts its worker when launched from a console-less shell (agent tools) | 🟡 | Dev tooling | Workaround |
-| KI-023 | Payroll: working days without any attendance record are paid (not LOP) | 🟡 | Payroll | By design (D-021) — revisit with HR |
+| KI-023 | Payroll: working days without any attendance record are paid (not LOP) | 🟡 | Payroll | By design — confirmed by the product owner 2026-10-06 (D-038) |
 | KI-024 | Payroll for the current month is provisional and changes as attendance is recorded | 🟡 | Payroll | By design (flagged `provisional` in API + UI) |
 | KI-025 | Orphan files stay in `documents/` after a manual seed reset or archive | 🟡 | Documents | Open |
-| KI-027 | Redesign Part 2 pending: 10 pages still use their original layout inside the new shell (restyled via shared components + dark-mode legacy bridge, D-028); some wide tables scroll inside their card at 1280–1440px (sidebar takes 248px) | 🟠 | Frontend | Open — Part 2 (`frontend/REDESIGN_NOTES.md` §4–5) |
-| KI-028 | `DataTable`/card pagination is not browser-verified (demo data < page size) | 🟡 | Frontend | Open — verify in Part 2 |
 | KI-026 | `test_rag.py` chat-source check passes for either the test or the real "Work From Home Policy.txt" (same file name) | 🟡 | Tests | Open |
+| KI-031 | Rate limits live in process memory: reset on restart, per uvicorn worker | 🟡 | Security | By design for one worker (D-031); multi-worker needs Redis or similar |
+| KI-032 | Approving a correction, declaring/removing a holiday does not regenerate payroll already generated for unpaid months | 🟡 | Payroll | By design — HR re-runs "Generate payroll" (D-033, D-034); paid months are locked |
+| KI-033 | Google sign-in auto-provisions any unknown Google account as an active `employee` (no domain allow-list, `email_verified` not checked) | 🟠 | Auth / Security | Open — needs an owner decision (allow-list domain? invite-only?) |
+| KI-034 | `app/api/users.py` queries the DB in route handlers instead of a service (AGENTS §2.1) | 🟡 | Architecture | Open |
+| KI-035 | Chat `confidence` stays `document_grounded` even when the LLM answers "I could not find this information…" | 🟡 | AI | Open — post-check the answer text |
+| KI-036 | `/chat` requests rejected with 400/422/429 are not written to `chat_logs` (PRD §28 logs interactions that reached the assistant) | 🟡 | AI / Logging | By design for now — note for audits |
+| KI-037 | `frontend/package.json` lists `axios`, which nothing imports | 🟡 | Dependencies | Open — remove on the next dependency change |
 
 ---
 
 ## Details
-
-### KI-027 / KI-028 — Redesign Part 1 leftovers
-- See `frontend/REDESIGN_NOTES.md` §5 for the full list (legacy bridge, wide tables beside the sidebar, ChatPage `bg-navy` chips in dark mode, pagination unverified, check-in POSTs not exercised).
 
 ### KI-001 — Demo data goes stale
 - **Cause:** The seed (`app/data/seed_data.json`) is Aug–Sep 2024; real demo usage needs current-month data.
@@ -52,13 +51,12 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 - **Gotcha:** MySQL REPEATABLE READ — a test's own session keeps an old snapshot; call `db.commit()`/`db.rollback()`
   before re-reading rows written through the API.
 
-### KI-003 — Short JWT secret
-- **Symptom:** `InsecureKeyLengthWarning: The HMAC key is 12 bytes long`.
-- **Fix:** Set a ≥ 32-byte random `JWT_SECRET_KEY` in `.env` (`python -c "import secrets;print(secrets.token_urlsafe(48))"`).
-  Changing it logs everyone out.
-
 ### KI-004 — Google OAuth flow
-- The SPA button calls `http://localhost:8000/auth/google/login?next=frontend`; the callback redirects to
+- Since session 5 the SPA button navigates to `/api/auth/google/login?next=frontend` (through the Bun proxy, so it also works
+  in Docker where the backend is not published; verified: 302 to Google + `Set-Cookie: session=…` pass through the proxy).
+  `GOOGLE_REDIRECT_URI` is now `http://localhost:3000/api/auth/google/callback` (D-041, 2026-10-06; verified: login 302 to Google
+  carries that redirect_uri in the Docker stack). The URI must also be added to the OAuth client in Google Cloud Console.
+  Earlier: the SPA button called `http://localhost:8000/auth/google/login?next=frontend`; the callback redirects to
   `FRONTEND_URL/login#token=…` (D-014). Verified in the browser on 2026-10-05: opening `/login#token=<valid JWT>` signs in,
   stores the token, strips the fragment and lands on `/dashboard`. Not verified: the real Google consent round-trip.
 
@@ -73,15 +71,15 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 
 ### KI-008 — Intent router limitations
 - `app/ai/router.py` is keyword-based. UNKNOWN questions are tried against documents (D-009) but data questions with
-  unusual wording may get a generic answer. `extract_month_and_year` defaults the year to **2024** when only a month is
-  given (demo dataset). **Proposed:** default year = latest year with data; LLM-assisted entity extraction fallback (P2).
+  unusual wording may get a generic answer.
+- **Fixed 2026-10-06:** the hard-coded 2024 year default and the ignored "this month" (D-029); rankings, headcount, unnamed
+  colleagues and company payroll questions (D-030). `tests/test_question_bank.py` is the regression bank — add a failing
+  question there first when a new phrasing is reported.
+- **Still open:** LLM-assisted intent/entity extraction fallback (P2); multi-turn follow-ups ("and in August?").
 
 ### KI-010 — Lexical retrieval
 - BM25 matches stemmed words, not meaning. **Proposed:** synonym map for common HR terms, or dense embeddings
   (replace `app/rag/embeddings.py` + `retriever.py`; schema unchanged).
-
-### KI-011 — Session secret fallback
-- `app/main.py` uses `SESSION_SECRET_KEY` → `JWT_SECRET_KEY` → `"default-session-secret-key"`. **Proposed:** fail fast.
 
 ### KI-017 — `httpx2`
 - Starlette's `TestClient` in this environment imports `httpx2` (seen in tracebacks); removing it breaks the tests.
@@ -97,12 +95,22 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
   `multiprocessing.spawn` children (they keep port 8000 bound).
 
 ### KI-023 / KI-024 — Payroll assumptions
-- Unrecorded working days are paid; only recorded absences, half days and approved unpaid leave reduce pay (D-021).
-  Generating the current month marks the result `provisional`. Paid rows (`paid_at`) are locked; there is no
-  "mark as paid" action in the UI yet (P2).
+- Unrecorded working days are paid; only recorded absences, half days and approved unpaid leave reduce pay (D-021,
+  confirmed D-038). Generating the current month marks the result `provisional`. Paid rows (`paid_at`) are locked; since
+  session 5 HR/Admin set it with `POST /salary/mark-paid` (D-036, irreversible).
 
 ### KI-025 — Orphan files in `documents/`
 - `scripts/seed_db.py` reset and archive keep stored files for audit. **Proposed:** an admin "purge archived files" task.
+
+### KI-031 — In-memory rate limits
+- `app/utils/rate_limit.py` keeps hit timestamps in a dict per process. Restarting the backend clears them; with several
+  uvicorn workers each worker counts separately (limits effectively multiplied). Docker runs one worker. **Proposed if
+  scaling out:** move the counters to Redis (same `RateLimiter` interface).
+
+### KI-032 — Payroll is not regenerated automatically
+- Payroll rows are a snapshot from the last "Generate payroll" run. Approving an attendance correction, editing a record or
+  declaring/removing a holiday changes what the engine *would* compute, but existing unpaid rows change only when HR runs
+  generation again (idempotent). Paid rows never change (D-036).
 
 ---
 
@@ -123,6 +131,12 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-015 | Overtime report OT Amount used whole-month payroll rows | 2026-10-05 s2 | Per-record minutes × monthly OT rate (D-021) |
 | KI-016 | No in-browser visual QA | 2026-10-05 s2 | `scripts/ui_qa.py`: 4 roles × 1400/1280/390 px × 14 routes → 0 issues; interactive flows checked; defects below fixed |
 | KI-020 | AI router printed leave length in calendar days | 2026-10-05 s2 | Uses `count_leave_days` (working days) |
+| KI-003 | JWT secret in local `.env` shorter than 32 bytes | 2026-10-06 s5 | `load_secret` refuses < 32 bytes / placeholders; dev secrets rotated (D-031) |
+| KI-011 | `SessionMiddleware` fell back to a hard-coded secret | 2026-10-06 s5 | Fallback removed; `SESSION_SECRET_KEY` required (D-031) |
+| KI-012 | HR could not edit/correct an attendance record | 2026-10-06 s5 | Correction requests + HR direct edit (D-033) |
+| KI-027 | Redesign Part 2 pending (10 pages on the dark-mode legacy bridge) | 2026-10-06 s5 | All 10 pages redesigned; bridge + legacy aliases deleted; axe clean light+dark (D-040) |
+| KI-028 | Pagination not browser-verified | 2026-10-06 s5 | Attendance → Records (276 rows, 25/page) at 1440 + 390 px: range text, `offset` API calls, Prev/Next by mouse + keyboard, last page |
+| KI-029 | Managers could not ask for team rankings in chat | 2026-10-06 s5 | Team-scoped rankings, owner-approved (D-032) |
 | R-010 | Chat "What is my leave balance?" → "not available in the provided context" | 2026-10-05 s2 | LEAVE tool now includes the Python-calculated balance |
 | R-011 | 390 px: tables widened the page (sr-only `position:absolute` header escaped `overflow-x-auto`) | 2026-10-05 s2 | Scroll containers made `relative` |
 | R-012 | 1400 px: admin menu hid "AI Assistant"/"Settings" off-screen with no cue | 2026-10-05 s2 | D-025 breakpoints + scroll arrows |
@@ -132,3 +146,7 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | R-016 | Admin/HR saw a "Deactivate" button on their own row (API refuses) | 2026-10-05 s2 | Hidden on own row |
 | R-017 | Phone dashboard stat labels truncated; leave-balance card said "Current calendar year" for 2024 data | 2026-10-05 s2 | Labels wrap (2 lines); subtitle shows the actual year |
 | R-018 | Test suite wiped demo data, uploaded documents and chat logs | 2026-10-05 s2 | D-023 |
+| R-019 | Chat "What is the total payroll for September 2024?" (HR) → 500 `TypeError` (router read non-existent summary keys) | 2026-10-06 | Correct keys; payroll summary covered by `test_question_bank.py` |
+| R-020 | "What is another employee's salary?" (PRD demo 2) / "Show all salaries" answered with the caller's own salary | 2026-10-06 | Refused for non-HR roles (D-030) |
+| R-021 | "What is my attendance this month?" / "…most overtime this month?" (PRD demos 1, 4) answered with all-time totals | 2026-10-06 | `resolve_period` (D-029) |
+| R-022 | "Who was late the most?", "How many employees are in Engineering?", "Show all employee personal information" → UNKNOWN | 2026-10-06 | Ranking, headcount and directory tools (D-030) |

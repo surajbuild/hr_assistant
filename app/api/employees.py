@@ -6,7 +6,7 @@ Employee-related routes.
 Endpoints
 ---------
 GET    /employees/me             — Profile of the currently authenticated user.
-GET    /employees                — Employee directory with filters.
+GET    /employees                — Employee directory with filters (limit/offset, X-Total-Count).
                                    HR / Admin: everyone. Manager: self + direct reports.
 GET    /employees/{employee_id}  — One employee. Employee: self only. Manager: self/team.
                                    HR / Admin: anyone.
@@ -18,7 +18,7 @@ DELETE /employees/{employee_id}  — Soft delete (status -> inactive, login disa
 from datetime import date
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,7 @@ from app.services.employee_service import (
     EmployeeValidationError,
 )
 from app.utils.dependencies import get_current_user, require_role
+from app.utils.pagination import set_total_count
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
@@ -137,12 +138,18 @@ def get_my_profile(current_user: User = Depends(get_current_user)):
     response_model=List[EmployeeDetailResponse],
     status_code=status.HTTP_200_OK,
     summary="List Employees",
-    description="Employee directory. HR/Admin see everyone; managers see themselves and their direct reports.",
+    description=(
+        "Employee directory. HR/Admin see everyone; managers see themselves and their direct reports. "
+        "Optional `limit` / `offset` pagination; the total is in the `X-Total-Count` header."
+    ),
 )
 def list_employees(
+    response: Response,
     search: Optional[str] = Query(None, max_length=100),
     department: Optional[str] = Query(None, max_length=100),
     status_filter: Optional[EmployeeStatusLiteral] = Query(None, alias="status"),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_role("hr", "admin", "manager")),
     db: Session = Depends(get_db),
 ):
@@ -150,8 +157,10 @@ def list_employees(
     employees = employee_service.list_employees(
         db, scope_ids=scope, search=search, department=department, status=status_filter
     )
+    set_total_count(response, len(employees))
+    page = employees[offset: offset + limit] if limit is not None else employees[offset:]
     show_salary = current_user.role in ("hr", "admin")
-    return [employee_service.serialize_employee(e, include_salary=show_salary) for e in employees]
+    return [employee_service.serialize_employee(e, include_salary=show_salary) for e in page]
 
 
 # ---------------------------------------------------------------------------

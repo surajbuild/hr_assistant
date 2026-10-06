@@ -44,6 +44,7 @@
   --color-status-present: var(--status-present);
   --color-status-present-bg: var(--status-present-bg);
   --color-status-present-fg: var(--status-present-fg);
+  --color-status-present-solid: var(--status-present-solid);
   --color-status-absent: var(--status-absent);
   --color-status-absent-bg: var(--status-absent-bg);
   --color-status-absent-fg: var(--status-absent-fg);
@@ -60,7 +61,7 @@
   --color-status-neutral-bg: var(--status-neutral-bg);
   --color-status-neutral-fg: var(--status-neutral-fg);
 
-  /* semantic aliases (used by legacy + new code): success=present, warning=late, danger=absent, info=half-day */
+  /* semantic aliases : success=present, warning=late, danger=absent, info=half-day */
   --color-success: var(--status-present);
   --color-success-light: var(--status-present-bg);
   --color-warning: var(--status-late);
@@ -77,13 +78,6 @@
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
 
-  /* legacy names still used by pages not yet redesigned (Part 2 removes them) */
-  --color-page: var(--background);
-  --color-ink: var(--foreground);
-  --color-ink-muted: var(--muted-foreground);
-  --color-navy: var(--legacy-navy);
-  --color-navy-dark: var(--legacy-navy);
-  --color-brand-light: var(--brand-subtle);
 
   /* radius: 8px controls, 12px cards */
   --radius-sm: 6px;
@@ -129,6 +123,7 @@
   --status-present: #059669;
   --status-present-bg: #ecfdf5;
   --status-present-fg: #047857;
+  --status-present-solid: #047857; /* filled success buttons: white text needs ≥ 4.5:1 (#059669 is 3.8:1) */
   --status-absent: #dc2626;
   --status-absent-bg: #fef2f2;
   --status-absent-fg: #b91c1c;
@@ -168,7 +163,6 @@
   --shadow-float: 0 12px 32px -8px rgb(15 23 42 / 0.16), 0 2px 8px rgb(15 23 42 / 0.06);
   --overlay: rgb(15 23 42 / 0.45);
 
-  --legacy-navy: #312e81;
 }
 
 .dark {
@@ -198,6 +192,7 @@
   --status-present: #34d399;
   --status-present-bg: #34d3991f;
   --status-present-fg: #6ee7b7;
+  --status-present-solid: #34d399;
   --status-absent: #f87171;
   --status-absent-bg: #f871711f;
   --status-absent-fg: #fca5a5;
@@ -234,63 +229,6 @@
   --shadow-float: 0 16px 40px -8px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.35);
   --overlay: rgb(2 6 15 / 0.65);
 
-  --legacy-navy: #a5b4fc;
-}
-
-/* ── Legacy bridge ────────────────────────────────────────────────────────────────────────────────────────────
-   Pages not yet redesigned (Part 2) still use Tailwind's raw palette (bg-white, bg-slate-50, bg-emerald-50 …).
-   In dark mode those palette variables are re-pointed at design tokens so those pages stay readable. DELETE this
-   block once no component uses raw palette colours (tracked in REDESIGN_NOTES.md). */
-@layer base {
-  .dark {
-    --color-white: var(--surface);
-    --color-slate-50: var(--surface-muted);
-    --color-slate-100: var(--surface-muted);
-    --color-slate-200: var(--border);
-    --color-slate-300: var(--border-strong);
-    --color-slate-400: #6b7a93;
-    --color-slate-500: var(--muted-foreground);
-    --color-slate-600: var(--muted-foreground);
-    --color-slate-700: #cbd5e1;
-    --color-slate-800: #e2e8f0;
-    --color-slate-900: var(--foreground);
-    --color-blue-50: var(--status-half-bg);
-    --color-blue-100: var(--status-half-bg);
-    --color-blue-200: #38bdf840;
-    --color-blue-500: var(--status-half);
-    --color-blue-600: var(--status-half);
-    --color-blue-700: var(--status-half-fg);
-    --color-blue-800: var(--status-half-fg);
-    --color-emerald-50: var(--status-present-bg);
-    --color-emerald-100: var(--status-present-bg);
-    --color-emerald-200: #34d39940;
-    --color-emerald-500: var(--status-present);
-    --color-emerald-600: var(--status-present);
-    --color-emerald-700: var(--status-present-fg);
-    --color-emerald-800: var(--status-present-fg);
-    --color-red-50: var(--status-absent-bg);
-    --color-red-200: #f8717140;
-    --color-red-500: var(--status-absent);
-    --color-red-600: var(--status-absent);
-    --color-red-700: var(--status-absent-fg);
-    --color-red-800: var(--status-absent-fg);
-    --color-amber-50: var(--status-late-bg);
-    --color-amber-200: #fbbf2440;
-    --color-amber-500: var(--status-late);
-    --color-amber-600: var(--status-late);
-    --color-amber-700: var(--status-late-fg);
-    --color-amber-800: var(--status-late-fg);
-    --color-violet-50: var(--status-leave-bg);
-    --color-violet-100: var(--status-leave-bg);
-    --color-violet-500: var(--status-leave);
-    --color-violet-600: var(--status-leave);
-    --color-violet-700: var(--status-leave-fg);
-    --color-violet-800: var(--status-leave-fg);
-    --color-rose-700: var(--status-absent-fg);
-    --color-indigo-700: var(--brand-subtle-foreground);
-    --color-cyan-800: #a5f3fc;
-    --color-blue-100: var(--status-half-bg);
-  }
 }
 
 @layer base {

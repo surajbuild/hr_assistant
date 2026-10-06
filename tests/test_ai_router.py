@@ -125,7 +125,34 @@ try:
     chk(m1 == 8 and y1 == 2024, "Extracted August 2024 -> (8, 2024)", f"Got ({m1}, {y1})")
 
     m2, y2 = extract_month_and_year("What was the overtime in September?")
-    chk(m2 == 9 and y2 == 2024, "Extracted September -> (9, 2024 default)", f"Got ({m2}, {y2})")
+    chk(m2 == 9 and y2 is None, "Extracted September -> (9, None): the year is resolved from data (D-029)", f"Got ({m2}, {y2})")
+
+    m3, _ = extract_month_and_year("May I see my attendance?")
+    chk(m3 is None, "'May I…' is not read as the month of May", f"Got month {m3}")
+
+    # resolve_period with a fixed "today" so the expectations don't depend on the calendar
+    from datetime import date
+    from app.ai.router import resolve_period
+    from app.services.attendance_service import get_months_with_data
+
+    periods = get_months_with_data(db)
+    fixed_today = date(2030, 6, 15)  # no data that late → exercises the fallbacks
+    latest_y, latest_m = max(p for p in periods if p <= (2030, 6))
+    rm, ry, note = resolve_period(db, "What is my attendance this month?", today=fixed_today)
+    chk((rm, ry) == (latest_m, latest_y) and note and "no records yet" in note,
+        "'this month' without data falls back to the latest month with data (with a note)", f"Got ({rm}, {ry}, {note})")
+    rm, ry, note = resolve_period(db, "Attendance this month", today=date(latest_y, latest_m, 1))
+    chk((rm, ry, note) == (latest_m, latest_y, None), "'this month' with data = the current month, no note", f"Got ({rm}, {ry}, {note})")
+    rm, ry, _ = resolve_period(db, "How was my attendance last month?", today=date(2027, 1, 10))
+    chk((rm, ry) == (12, 2026), "'last month' in January = December of the previous year", f"Got ({rm}, {ry})")
+    sept_years = [y for y, m in periods if m == 9 and (y, m) <= (2030, 6)]
+    rm, ry, note = resolve_period(db, "What was the overtime in September?", today=fixed_today)
+    chk(rm == 9 and ry == max(sept_years) and "most recent September" in (note or ""),
+        f"Month without year -> most recent September with records ({max(sept_years)})", f"Got ({rm}, {ry}, {note})")
+    rm, ry, _ = resolve_period(db, "Overtime in November?", today=date(2010, 3, 1))
+    chk((rm, ry) == (11, 2009), "Month without year and no data -> most recent past November by calendar", f"Got ({rm}, {ry})")
+    rm, ry, _ = resolve_period(db, "Show payslip for August 2024")
+    chk((rm, ry) == (8, 2024), "Explicit month + year kept as given", f"Got ({rm}, {ry})")
 
     # -----------------------------------------------------------------------
     # [8] Controlled Data Retrieval & Grounding
@@ -146,7 +173,7 @@ try:
 
     # 8.2 Aman August Attendance retrieval by HR
     ctx_att, src_att, err_att = retrieve_hr_context(
-        db, hr_user, Intent.ATTENDANCE, "How many days was Aman present in August?"
+        db, hr_user, Intent.ATTENDANCE, "How many days was Aman present in August 2024?"
     )
     chk("Present Days: 22" in ctx_att, "Aman August context contains 'Present Days: 22'", f"Got:\n{ctx_att}")
     chk("Absent Days: 2" in ctx_att, "Aman August context contains 'Absent Days: 2'", f"Got:\n{ctx_att}")
@@ -155,7 +182,7 @@ try:
 
     # 8.3 Rahul September Overtime retrieval by HR
     ctx_ot, src_ot, err_ot = retrieve_hr_context(
-        db, hr_user, Intent.ATTENDANCE, "What is Rahul's overtime in September?"
+        db, hr_user, Intent.ATTENDANCE, "What is Rahul's overtime in September 2024?"
     )
     chk("1115 minutes" in ctx_ot or "1,115 minutes" in ctx_ot,
         "Rahul September context contains 1,115 minutes overtime", f"Got:\n{ctx_ot}")

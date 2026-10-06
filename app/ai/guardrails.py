@@ -35,6 +35,10 @@ def check_rbac_access(
     - Employee directory / all employees:
       * HR & Admin: Allowed.
       * Manager & Employee: Limited to self profile.
+    - Another employee's profile (EMPLOYEE intent) — same as GET /employees/{id} (D-039):
+      * HR & Admin: Allowed.
+      * Manager: direct reports only.
+      * Employee: FORBIDDEN.
 
     Returns:
         (is_allowed, denial_reason)
@@ -73,8 +77,10 @@ def check_rbac_access(
                 return False, "Access denied: You are not authorized to view another employee's leave records."
             if intent == "ATTENDANCE":
                 return False, "Access denied: You are not authorized to view another employee's attendance records."
+            if intent == "EMPLOYEE":
+                return False, "Access denied: You can only view the profiles of yourself and your direct reports."
 
-    # Employee: cannot view other employees' salary, leaves, or attendance
+    # Employee: cannot view other employees' profile, salary, leaves, or attendance
     if intent == "SALARY":
         return False, "Access denied: You are not authorized to view another employee's salary details."
 
@@ -85,8 +91,8 @@ def check_rbac_access(
         return False, "Access denied: You are not authorized to view another employee's attendance records."
 
     if intent == "EMPLOYEE":
-        # General employee profile lookups
-        return True, None
+        # Same rule as GET /employees/{id} (D-039, confirmed by the product owner): employees see only themselves
+        return False, "Access denied: You can only view your own employee profile."
 
     return True, None
 

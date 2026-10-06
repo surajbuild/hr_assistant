@@ -13,7 +13,7 @@ Properties
   re-run after deleting a row recreates the same row.
 - Uses the Python calculation engine (attendance_service.calculate_day_metrics)
   for late / working / overtime minutes — no hard-coded numbers.
-- Weekends -> status "weekend"; fixed public holidays -> "holiday";
+- Weekends -> status "weekend"; national + HR-declared holidays (D-034) -> "holiday";
   approved leave days -> "leave"; today (before 18:00) -> checked in, not out.
 
 Usage:
@@ -49,10 +49,11 @@ from app.database.models import (  # noqa: E402
     UserRole,
 )
 from app.services.attendance_service import (  # noqa: E402
-    COMPANY_HOLIDAYS as PUBLIC_HOLIDAYS,
     HALF_DAY_THRESHOLD_MINUTES,
     calculate_day_metrics,
+    is_working_day,
 )
+from app.services.holiday_service import get_declared_holiday_dates  # noqa: E402
 
 # Leave requests to create: (employee index in name order, type, working-day index, length, status, reason)
 #   APPROVED leaves use working days already in the past (index 0 = most recent past working day);
@@ -77,19 +78,20 @@ def _clock(minutes_after_midnight: int) -> time:
     return time(minutes_after_midnight // 60, minutes_after_midnight % 60)
 
 
-def working_days(first: date, last: date):
+def working_days(first: date, last: date, holidays=None):
     d = first
     while d <= last:
-        if d.weekday() < 5 and (d.month, d.day) not in PUBLIC_HOLIDAYS:
+        if is_working_day(d, holidays):
             yield d
         d += timedelta(days=1)
 
 
-def plan_day(code: str, day: date, now: datetime):
-    """Return attendance kwargs for one employee-day (without employee_id)."""
+def plan_day(code: str, day: date, now: datetime, holidays=None):
+    """Return attendance kwargs for one employee-day (without employee_id).
+    `holidays` = HR-declared holiday dates (D-034); national holidays are always included."""
     if day.weekday() >= 5:
         return {"status": AttendanceStatus.WEEKEND.value}
-    if (day.month, day.day) in PUBLIC_HOLIDAYS:
+    if not is_working_day(day, holidays):
         return {"status": AttendanceStatus.HOLIDAY.value}
 
     r = _rand(code, day)
@@ -158,7 +160,8 @@ def generate(month: str = None, dry_run: bool = False) -> dict:
 
         # 1. Leave requests (before attendance, so approved leave days become "leave")
         month_last = date(year, mon, calendar.monthrange(year, mon)[1])
-        all_wdays = list(working_days(first, month_last))
+        holidays = get_declared_holiday_dates(db, first, month_last)
+        all_wdays = list(working_days(first, month_last, holidays))
         past = [d for d in all_wdays if d < now.date()][::-1]       # most recent first
         future = [d for d in all_wdays if d > now.date()]
         for idx, leave_type, offset, length, status, reason in LEAVE_PLAN:
@@ -219,7 +222,7 @@ def generate(month: str = None, dry_run: bool = False) -> dict:
                 if (emp.id, day) in approved and day.weekday() < 5:
                     plan = {"status": AttendanceStatus.LEAVE.value}
                 else:
-                    plan = plan_day(emp.employee_code, day, now)
+                    plan = plan_day(emp.employee_code, day, now, holidays)
                 if plan is None:
                     continue
                 created["attendance"] += 1

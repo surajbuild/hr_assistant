@@ -10,7 +10,8 @@ Sections
 
 Environment variables required for JWT
 ---------------------------------------
-JWT_SECRET_KEY                  — long random string, keep secret
+JWT_SECRET_KEY                  — random string of at least 32 bytes, keep secret
+                                  (the app refuses to start otherwise, see load_secret)
 JWT_ALGORITHM                   — signing algorithm, default HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES — token lifetime, default 60 minutes
 
@@ -84,16 +85,38 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Secrets (KI-003 / KI-011) ─────────────────────────────────────────────────
+MIN_SECRET_BYTES = 32
+
+# Placeholder values shipped in .env.example — never accepted as real secrets.
+_PLACEHOLDER_SECRETS = {
+    "your-super-secret-key-change-this-in-production",
+    "your-session-secret-key-for-oauth-state",
+}
+
+
+def load_secret(name: str) -> str:
+    """
+    Read a signing secret from the environment and fail fast when it is unusable.
+
+    Raises:
+        EnvironmentError: missing, a known placeholder, or shorter than 32 bytes.
+    """
+    value = os.getenv(name, "")
+    hint = 'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
+    if not value:
+        raise EnvironmentError(f"{name} is not set. Add it to your .env file. {hint}")
+    if value in _PLACEHOLDER_SECRETS:
+        raise EnvironmentError(f"{name} still has the .env.example placeholder value. {hint}")
+    if len(value.encode("utf-8")) < MIN_SECRET_BYTES:
+        raise EnvironmentError(f"{name} must be at least {MIN_SECRET_BYTES} bytes long. {hint}")
+    return value
+
+
 # ── Configuration (read once at import time) ──────────────────────────────────
-_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
+_SECRET_KEY: str = load_secret("JWT_SECRET_KEY")
 _ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
 _EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-
-if not _SECRET_KEY:
-    raise EnvironmentError(
-        "JWT_SECRET_KEY is not set. "
-        "Add it to your .env file before starting the application."
-    )
 
 
 # ── Structured token payload ──────────────────────────────────────────────────

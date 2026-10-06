@@ -2,6 +2,87 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-06 (session 6 — Docker bring-up)
+
+### Changed
+- `GOOGLE_REDIRECT_URI` now `http://localhost:3000/api/auth/google/callback` so Google sign-in works in Docker (D-041, KI-004);
+  `.env.example`, README and `docs/ARCHITECTURE.md` updated.
+- Docker stack verified: 3 containers healthy, demo seed loaded, `generate_demo_month.py` run for Oct 2026, sample documents
+  uploaded as HR (2 docs, 3 chunks each), policy chat answer returned.
+
+## 2026-10-06 (session 5 — hardening, corrections, holidays, payroll, pagination, Docker, docs, redesign Part 2)
+
+### Added
+- **Attendance corrections** (D-033): employees request in/out times for a past day; the manager (team only) or HR/Admin
+  approves or rejects — never their own; HR/Admin edit records directly (`PUT /attendance/records/{id}`, not their own).
+  Table `attendance_corrections`, `correction_service.py`, Attendance → Corrections tab.
+- **Holiday calendar** (D-034): HR-declared company holidays (`holidays` table, `GET/POST/DELETE /holidays`) on top of the
+  national ones; excluded from payroll working days, leave-day counts and the OT rate; Leave → Holidays tab; chat answers.
+- **Mark as paid** (D-036): `POST /salary/mark-paid`, irreversible; a paid month locks payroll regeneration and attendance edits.
+- **Pagination** (D-035): `limit`/`offset` + `X-Total-Count` on `/employees`, `/attendance/records`, `/chat/logs` (+ `search`);
+  `api.getPage<T>()` in the frontend.
+- **Rate limiting** (D-031): `/auth/login` per IP and per (IP, email) failures, `/chat` per user → 429 + `Retry-After`.
+- **Docker**: `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`, `docker/` (image build not yet run, see status).
+- **PRD §33 docs**: `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md`.
+- Migration `f6a7b8c9d0e1` (holidays + attendance_corrections); tests `test_holidays_corrections.py`,
+  `test_security_hardening.py`; question bank C14–C18, D14.
+- Token `--status-present-solid` for filled success buttons (D-040).
+
+### Changed
+- **Secrets** (D-031): `JWT_SECRET_KEY` / `SESSION_SECRET_KEY` must be ≥ 32 bytes and not placeholders, else the app won't
+  start; the hard-coded session-secret fallback is gone; dev secrets rotated.
+- Chat: managers get team-scoped rankings (D-032); profile lookups follow `GET /employees/{id}` — employees can no longer read
+  other people's profiles through chat (D-039); `POST /attendance` refuses the caller's own employee id.
+- Google sign-in starts through the `/api` proxy (works in Docker).
+- **Redesign Part 2** (D-037): Employee form, Employee profile, Departments, Attendance, Leave, Payroll, Documents, Reports,
+  AI Assistant, Settings rebuilt on design system v2 (`pages/attendance|chat|leave|payroll|people|settings/*`).
+
+### Removed
+- The dark-mode legacy bridge and legacy colour aliases from `globals.css` (D-028 completed, D-040).
+
+### Fixed
+- KI-003, KI-011 (secrets), KI-012 (attendance corrections), KI-029 (manager rankings), KI-027 (redesign), KI-028
+  (pagination verified in the browser).
+- Light-mode contrast of the success button (Approve / check-in): 3.76:1 → AA.
+
+### Notes
+- Product-owner decisions this session: D-032, D-033, D-037, D-038 (unrecorded days stay paid), D-039.
+- A power cut interrupted the session's last steps; they were completed afterwards (bridge removal, contrast fix, quality pass,
+  handoff docs). Verification: 37 files / 882 checks / 0 failed, DB unchanged; `ui_qa.py` 0 issues; axe 0 violations in light
+  and dark on 22 page views; `tsc` + build clean.
+
+## 2026-10-06 (session 4 — PRD §30 question bank + AI router fixes)
+
+### Added
+- `tests/test_question_bank.py` — the PRD §30 question bank through `POST /chat`: 22 normal, 11 incorrect, 13 security,
+  13 calculation questions (expected numbers computed from MySQL in the test) and 11 RAG checks (a real 2-page PDF with
+  page citation, DOCX, TXT, archive, new version). Covers every PRD §35 demo question.
+- Chat tools (D-030): rankings for overtime / late arrivals / absences (`attendance_service.rank_employees`), department
+  headcount (scoped like `GET /departments`), company payroll summary for "all salaries" / "payroll for 2024".
+- `attendance_service.get_months_with_data`, `salary_service.get_payroll_periods`.
+
+### Changed
+- Period handling in the AI router (D-029, KI-008): "this month" (falls back to the latest month with data, with a note),
+  "last month", and a month without a year means the most recent such month with records — no more hard-coded 2024.
+  `extract_month_and_year` returns `year=None` when no year is written; "May I…" is no longer the month of May.
+- Attendance answers include half days and leave days; a person/period with no records now says
+  "Attendance data is not available for the requested period" (PRD §29) instead of listing zeros.
+- `app/ai/router.py` no longer runs its own queries (the overtime ranking and employee lookup moved to services, AGENTS.md §2.2).
+- Tests and `scripts/smoke_test_chat.py` that expect seed numbers now name the year ("August 2024").
+
+### Fixed
+- R-019: HR "What is the total payroll for September 2024?" crashed `/chat` with a 500 (wrong summary keys).
+- R-020: "What is another employee's salary?" (PRD demo 2) and "Show all salaries" returned the caller's own salary
+  instead of a refusal.
+- R-021: "What is my attendance this month?" / "Who worked the most overtime this month?" (PRD demos 1, 4) used all-time data.
+- R-022: "Who was late the most?", "How many employees are in Engineering?", "Show all employee personal information"
+  were not understood (UNKNOWN).
+
+### Notes
+- No permission rule changed; rankings stay HR/Admin only (manager team rankings = owner question, KI-029).
+- Verification: `scripts/run_tests.py` 35 files / 769 checks / 0 failed; `db_snapshot.py diff` → "Database unchanged".
+  The new bank fails 20 checks against the previous router.
+
 ## 2026-10-05 (session 3 — frontend redesign, Part 1 of 2)
 
 ### Added

@@ -1,0 +1,54 @@
+# Backend image build context (repo root). Only app/, alembic/, alembic.ini, scripts/,
+# sample_documents/, requirements.txt and docker/ are needed.
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# VCS, editors, OS
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.claude
+*.swp
+Thumbs.db
+.DS_Store
+
+# Python artefacts
+.venv
+venv
+__pycache__
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Uploaded documents (live in the documents_data volume) — never bake into the image
+documents
+
+# Frontend has its own image/context
+frontend
+node_modules
+
+# Tests, QA output, snapshots, local artefacts
+tests
+qa_shots
+/*.png
+before.json
+after.json
+*.log
+Project-Suraj.docx
+
+# Docs at the repo root (not needed at runtime)
+*.md
+
+# Compose files themselves
+docker-compose*.yml
+Dockerfile

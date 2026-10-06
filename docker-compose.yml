@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# AI HR Assistant — Docker Compose deployment (MySQL + FastAPI backend + Bun frontend)
+# ---------------------------------------------------------------------------
+#   cp .env.example .env      # fill in secrets + the "Docker" section
+#   docker compose up -d --build
+#   open http://localhost:3000
+#
+# - Secrets come from .env (env_file for the backend, ${VAR} interpolation for MySQL);
+#   nothing secret is written in this file.
+# - Only the frontend is published. MySQL and the backend stay on the internal network;
+#   the browser reaches the API through the Bun proxy at /api/*.
+# - The backend trusts X-Forwarded-For only from TRUSTED_PROXY_IPS, set here to the frontend
+#   container's fixed address (not the whole subnet: the Docker gateway is in the subnet too, so a
+#   published backend port would otherwise let a direct caller spoof its IP).
+# - Uploaded HR documents and MySQL data live in named volumes and survive restarts.
+# ---------------------------------------------------------------------------
+name: ai-hr-assistant
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_hr_assistant}
+      MYSQL_USER: ${MYSQL_USER:-hr_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # TCP ping: only succeeds once the init phase (which runs with networking disabled) is over.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - hr_net
+    # No "ports:" on purpose — MySQL is not reachable from the host. For local debugging, add a
+    # docker-compose.override.yml with  ports: ["127.0.0.1:3307:3306"].
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Overrides the localhost DATABASE_URL from .env. MYSQL_USER/MYSQL_PASSWORD must be URL-safe
+      # (no @ : / ? # % characters) because they are embedded in this URL as-is.
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-hr_app}:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}@db:3306/${MYSQL_DATABASE:-ai_hr_assistant}?charset=utf8mb4
+      DOCUMENTS_DIR: /app/documents
+      TRUSTED_PROXY_IPS: ${FRONTEND_IP:-172.28.0.10}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - documents_data:/app/documents
+    networks:
+      - hr_net
+    # No "ports:" — the API is reached through the frontend's /api proxy (see README "Deployment (Docker)").
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    networks:
+      hr_net:
+        ipv4_address: ${FRONTEND_IP:-172.28.0.10}   # fixed: the backend trusts X-Forwarded-For only from it
+
+networks:
+  hr_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.28.0.0/16}
+
+volumes:
+  mysql_data:
+  documents_data:

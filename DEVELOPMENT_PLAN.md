@@ -3,7 +3,7 @@
 > Mark tasks `[x]` when done — never delete them. Add new tasks where they belong.
 > Priorities: **P0** blocker · **P1** critical (PRD acceptance) · **P2** important · **P3** nice-to-have.
 
-Last updated: 2026-10-05 (end of session 2)
+Last updated: 2026-10-06 (session 5 — security hardening, corrections, holidays, mark-paid, pagination, Docker, redesign Part 2)
 
 ---
 
@@ -68,15 +68,17 @@ Dependencies:
 
 ### Tests
 - [x] Tests for new endpoints (employees CRUD, departments, attendance daily/check-in, leaves list/balance/cancel/manager scope, salary list, documents/RAG, chat sources, users, dashboard/me)
-- [ ] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — currently partially covered by `test_ai_router.py`, `test_chat_api.py`, `test_rbac_matrix.py`, `test_rag.py`
+- [x] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — `tests/test_question_bank.py`
+      (22 / 11 / 13 / 13 / 11 = 70 checks, 2026-10-06); fixed the router gaps it exposed (D-029, D-030, R-019…R-022)
 
 ## Frontend redesign (D-026) — product-owner request, 2026-10-05
 
 - [x] Part 1: design tokens + dark mode, Radix primitives, sidebar shell, ⌘K palette, Login, Dashboard (4 role layouts), Employees
-- [ ] **Owner approval of the Part 1 direction** (checkpoint — do not start Part 2 without it)
-- [ ] Part 2: Employee form, Employee profile (cover/tabs), Departments, Attendance (calendar heat-map), Leave (drawer/timeline),
-      Payroll, Documents (drag-and-drop), Reports, AI Assistant (bubbles/copy/history), Settings
-- [ ] Part 2: delete the dark-mode legacy bridge, full quality pass (roles × widths × themes, axe, keyboard), finalise docs
+- [x] **Owner approval of the Part 1 direction** — owner said "go ahead and do all the tasks" (2026-10-06, D-037)
+- [x] Part 2: Employee form, Employee profile (cover/tabs), Departments, Attendance (calendar heat-map), Leave (drawer/timeline),
+      Payroll, Documents (drag-and-drop), Reports, AI Assistant (bubbles/copy/history), Settings (2026-10-06, session 5)
+- [x] Part 2: delete the dark-mode legacy bridge, full quality pass (roles × widths × themes, axe, keyboard), finalise docs
+      (2026-10-06, session 5 — finished after a power cut interrupted the session; D-040)
 
 ## P2 — Important improvements
 
@@ -85,21 +87,23 @@ Dependencies:
 - [ ] Synonym map or dense embeddings for RAG (KI-010)
 - [x] Use working days for leave length in the AI router too (KI-020) — and the LEAVE tool now includes the balance
 - [ ] Code-split the frontend bundle (KI-006); keyboard-accessible table rows (KI-018)
-- [ ] Default the AI router's month-only questions to the latest year with data instead of 2024 (KI-008)
+- [x] Default the AI router's month-only questions to the latest year with data instead of 2024 (KI-008) — plus "this month" /
+      "last month" (D-029, 2026-10-06)
+- [x] Team-scoped chat rankings for managers — owner said yes (2026-10-06, D-032)
 
 - [x] Google OAuth callback redirects to the frontend with the token when started with `?next=frontend` (D-014) — real-account test pending, KI-004
 - [ ] LLM-assisted intent/entity extraction as fallback when rule-based router returns UNKNOWN
 - [x] Payroll generation engine — `generate_payroll`, `POST /salary/generate`, UI dialog, `employees.monthly_gross_salary` (D-021); OT amount pro-rated in reports (KI-015)
-- [ ] "Mark as paid" action for payroll rows (locks them; engine already honours `paid_at`)
+- [x] "Mark as paid" action for payroll rows — `POST /salary/mark-paid`, irreversible (2026-10-06, D-036)
 - [ ] Salary-structure breakdown (basic / HRA / allowances) and payslip PDF
-- [ ] Revisit LOP policy for working days with no attendance record (KI-023) with HR
-- [ ] Attendance edit (`PUT /attendance/{record_id}`) and correction-request workflow (reference site has request → approve)
-- [ ] Holidays calendar (table + UI) — reference has it in Leave module
-- [ ] Pagination on list endpoints (employees, attendance records, chat logs)
-- [ ] Rate limiting on `/auth/login` and `/chat`
-- [ ] Rotate to a ≥32-byte JWT secret; move SessionMiddleware secret fallback out of code
-- [ ] Architecture document + AI documentation (PRD §33) — partially in README
-- [ ] Deployment (Docker compose: MySQL + backend + frontend build)
+- [x] Revisit LOP policy for working days with no attendance record (KI-023) — owner: keep paid (2026-10-06, D-038)
+- [x] Attendance edit (`PUT /attendance/records/{id}`) and correction-request workflow (request → approve) (2026-10-06, D-033)
+- [x] Holidays calendar (table + API + Leave-page tab; payroll/leave counting exclude holidays) (2026-10-06, D-034)
+- [x] Pagination on list endpoints (employees, attendance records, chat logs) — `limit`/`offset` + `X-Total-Count` (2026-10-06, D-035)
+- [x] Rate limiting on `/auth/login` and `/chat` (2026-10-06, D-031)
+- [x] Rotate to a ≥32-byte JWT secret; move SessionMiddleware secret fallback out of code — enforced at startup (2026-10-06, D-031)
+- [x] Architecture document + AI documentation + generated API reference (PRD §33) — `docs/` (2026-10-06)
+- [x] Deployment (Docker compose: MySQL + backend + frontend) — files + README; image build not yet run on a machine with Docker running (2026-10-06)
 
 ## P3 — Nice-to-have (reference-site modules outside PRD scope)
 
@@ -122,7 +126,7 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted. Frontend calls
 |---|---|---|---|
 | POST | `/auth/login` | public | `{email,password}` → `{access_token, token_type}` |
 | GET | `/auth/me` | any | `{user_id,email,role,status,employee:{...}}` |
-| GET | `/employees` | admin, hr, manager | query `search, department, status`; manager → self + direct reports. Items include `manager_name, email, role` |
+| GET | `/employees` | admin, hr, manager | query `search, department, status, limit?, offset?` (`X-Total-Count`); manager → self + direct reports. Items include `manager_name, email, role` |
 | GET | `/employees/me` | any | own profile (detail schema incl. manager_name and own `monthly_gross_salary`) |
 | GET | `/employees/{id}` | any | employee → self only; manager → self/team; hr/admin → any |
 | POST | `/employees` | admin, hr | body: employee fields (+ `monthly_gross_salary`) + optional `email,password,role` to create login |
@@ -135,7 +139,16 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted. Frontend calls
 | POST | `/attendance/check-in` | any | creates today's record; late after 09:15 |
 | POST | `/attendance/check-out` | any | computes working/overtime minutes (OT beyond 540 min) |
 | GET | `/attendance/daily` | admin, hr, manager | `date` (default latest with data); every in-scope employee + record or `not_marked` |
-| GET | `/attendance/records` | admin, hr, manager | `employee_id?, from_date?, to_date?, status?`; manager limited to team |
+| GET | `/attendance/records` | admin, hr, manager | `employee_id?, from_date?, to_date?, status?, limit?, offset?` (`X-Total-Count`); manager limited to team |
+| PUT | `/attendance/records/{id}` | admin, hr | `{status, in_time?, out_time?}`; worked days computed; not own record; 409 when the month is paid (D-033) |
+| POST | `/attendance/corrections` | any | own past day `{attendance_date, in_time, out_time, reason}` → 201; 409 duplicate pending / paid month |
+| GET | `/attendance/corrections/me` | any | own requests |
+| GET | `/attendance/corrections` | admin, hr, manager | `status?`; manager → team; own excluded |
+| POST | `/attendance/corrections/{id}/approve` · `/reject` | admin, hr, manager | `{note?}`; never own; manager → team |
+| POST | `/attendance/corrections/{id}/cancel` | owner | pending only |
+| GET | `/holidays` | any | `year?` → national + company holidays (D-034) |
+| POST | `/holidays` | admin, hr | `{holiday_date, name}`; 422 weekend, 409 national/duplicate |
+| DELETE | `/holidays/{id}` | admin, hr | company holidays only |
 | POST | `/attendance` | admin, hr | create record for any employee |
 | GET | `/attendance/{employee_id}` | admin, hr | existing |
 | POST | `/leaves` | any | apply |
@@ -148,6 +161,7 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted. Frontend calls
 | GET | `/salary/me` | any | own slips |
 | GET | `/salary` | admin, hr | `month?, year?` (default latest) items include `employee_name, employee_code, department` |
 | GET | `/salary/summary` | admin, hr | existing |
+| POST | `/salary/mark-paid` | admin, hr | `{salary_ids}` → `{marked, already_paid, not_found, paid_at}`; irreversible lock (D-036) |
 | POST | `/salary/generate` | admin, hr | `{month, year, employee_ids?}` → `{working_days, provisional, created, updated, skipped[], items[]}` — payroll engine (D-021); future month → 400 |
 | GET | `/salary/{employee_id}` | admin, hr | existing |
 | GET | `/documents` | any | list (active + processing + failed; `include_archived` for hr/admin) |
@@ -157,7 +171,7 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted. Frontend calls
 | DELETE | `/documents/{id}` | admin, hr | archive + remove chunks |
 | POST | `/chat` | any | `{message}` (or legacy `{question}`) → `{question, answer, intent, source, confidence, page, sources[]}`; confidence ∈ data_verified/document_grounded/policy_reference/not_found/access_denied/general |
 | GET | `/chat/history` | any | own last N chat logs |
-| GET | `/chat/logs` | admin | audit log |
+| GET | `/chat/logs` | admin | audit log; `limit, offset, search` (`X-Total-Count`) |
 | GET | `/dashboard/summary` | admin, hr | KPIs + charts (+ `monthly_attendance`) |
 | GET | `/dashboard/me` | any | personal month stats, leave balance, latest salary, today's status; manager: `team` block |
 | GET | `/reports/attendance` | admin, hr | xlsx; `month+year` \| `year` \| `date_from,date_to`; `department` |

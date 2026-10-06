@@ -29,6 +29,7 @@ from app.database.models import User, UserStatus
 from app.database.queries import get_user_by_email
 from app.services import auth_service
 from app.services.auth_service import InactiveUserError, OAuthAccountConflictError
+from app.utils import rate_limit
 from app.utils.oauth import oauth, GOOGLE_REDIRECT_URI
 from app.utils.dependencies import get_current_user
 from app.utils.security import create_access_token, verify_password
@@ -108,23 +109,32 @@ def _reject_credentials() -> None:
         "Returns a Bearer JWT access token on success."
     ),
 )
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """
     Login flow
     ----------
+    0. Rate limit: attempts per client IP, failed attempts per (IP, email) — 429 (D-031).
     1. Look up the user by email.
     2. Verify the password against the stored bcrypt hash.
     3. Confirm the account is active.
     4. Issue a signed JWT access token.
     """
+    ip = rate_limit.client_ip(request)
+    failure_key = f"{ip}|{body.email.lower()}"
+    rate_limit.enforce(rate_limit.login_ip_limiter, ip, "login attempts")
+    rate_limit.enforce(rate_limit.login_failure_limiter, failure_key, "failed login attempts", record=False)
+
     # Step 1 — find the user
     user = get_user_by_email(db, body.email)
     if not user:
+        rate_limit.login_failure_limiter.hit(failure_key)
         _reject_credentials()
 
     # Step 2 — verify password (also guards OAuth-only accounts that have no hash)
     if not verify_password(body.password, user.password_hash or ""):
+        rate_limit.login_failure_limiter.hit(failure_key)
         _reject_credentials()
+    rate_limit.login_failure_limiter.reset(failure_key)
 
     # Step 3 — account must be active
     if user.status != UserStatus.ACTIVE.value:

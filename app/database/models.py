@@ -72,6 +72,13 @@ class LeaveStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class CorrectionStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
 class DocumentStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -230,6 +237,59 @@ class Attendance(Base):
     # Relationships
     employee: Mapped["Employee"] = relationship(
         "Employee", back_populates="attendance_records"
+    )
+
+
+class AttendanceCorrection(Base):
+    """
+    An employee's request to correct (regularize) one day's attendance — e.g. a missed
+    check-out. The approver (the employee's manager, or HR/Admin — never the requester,
+    D-033) applies it, which creates or updates the attendance row for that date.
+    """
+    __tablename__ = "attendance_corrections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("employees.id"), nullable=False, index=True
+    )
+    attendance_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # The record that existed when the request was made (NULL = no record that day)
+    attendance_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("attendance.id"), nullable=True
+    )
+    requested_in_time: Mapped[time] = mapped_column(Time, nullable=False)
+    requested_out_time: Mapped[time] = mapped_column(Time, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=CorrectionStatus.PENDING.value
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    reviewed_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    employee: Mapped["Employee"] = relationship("Employee")
+
+
+class Holiday(Base):
+    """
+    A company holiday declared by HR for one date (non-working, paid). The fixed mandatory
+    national holidays stay in attendance_service.COMPANY_HOLIDAYS and recur every year (D-034).
+    """
+    __tablename__ = "holidays"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    holiday_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
     )
 
 

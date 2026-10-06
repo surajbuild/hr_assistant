@@ -1,0 +1,32 @@
+# Frontend image build context (frontend/).
+
+# Dependencies are installed inside the image from bun.lock
+node_modules
+
+# Build output / caches
+dist
+.redesign
+.cache
+*.tsbuildinfo
+
+# Secrets / local config
+.env
+.env.*
+
+# VCS, editors, OS
+.git
+.gitignore
+.vscode
+.idea
+Thumbs.db
+.DS_Store
+
+# QA output, logs
+qa_shots
+*.log
+
+# Docs (not needed at runtime)
+*.md
+
+Dockerfile
+.dockerignore
