@@ -104,7 +104,7 @@ try:
     print("\n[3] HR Inquiry: Aman's August Attendance (PRD Query)")
     with patch("app.api.chat.generate_response") as mock_llm:
         mock_llm.return_value = "Aman was present for 22 days in August 2024, with 2 absences and 4 late clock-ins."
-        q = "How many days was Aman present in August?"
+        q = "How many days was Aman present in August 2024?"
         r_aman_att = client.post("/chat", json={"question": q}, headers=hr_headers)
 
         chk(r_aman_att.status_code == 200, "HR query returns 200 OK", f"Status: {r_aman_att.status_code}")
@@ -122,7 +122,7 @@ try:
     print("\n[4] HR Inquiry: Rahul's September Overtime (PRD Query)")
     with patch("app.api.chat.generate_response") as mock_llm:
         mock_llm.return_value = "Rahul Sharma worked 1,115 minutes (18 hours 35 minutes) of overtime in September 2024."
-        q = "What is Rahul's overtime in September?"
+        q = "What is Rahul's overtime in September 2024?"
         r_rahul_ot = client.post("/chat", json={"question": q}, headers=hr_headers)
 
         chk(r_rahul_ot.status_code == 200, "Rahul overtime returns 200 OK", f"Status: {r_rahul_ot.status_code}")

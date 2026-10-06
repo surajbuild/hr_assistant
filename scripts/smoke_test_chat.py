@@ -52,14 +52,14 @@ def run_smoke_tests():
             "category": "Core Demo Question 1",
             "headers": hr_headers,
             "user": "Neha Verma (HR Manager)",
-            "question": "How many days was Aman present in August?",
+            "question": "How many days was Aman present in August 2024?",
             "expected_source": "MySQL (attendance)",
         },
         {
             "category": "Core Demo Question 2",
             "headers": hr_headers,
             "user": "Neha Verma (HR Manager)",
-            "question": "What is Rahul's overtime in September?",
+            "question": "What is Rahul's overtime in September 2024?",
             "expected_source": "MySQL (attendance)",
         },
         {
