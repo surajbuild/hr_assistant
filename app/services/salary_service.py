@@ -225,6 +225,11 @@ def get_latest_payroll_period(db: Session) -> Optional[Tuple[int, int]]:
     return (row[1], row[0]) if row else None
 
 
+def get_payroll_periods(db: Session) -> List[Tuple[int, int]]:
+    """Sorted (year, month) pairs that have salary records."""
+    return sorted((int(y), int(m)) for y, m in db.query(Salary.year, Salary.month).distinct().all())
+
+
 def list_payroll(
     db: Session,
     month: Optional[int] = None,

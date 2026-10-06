@@ -13,14 +13,18 @@ Detects basic intents:
 - UNKNOWN
 
 Fetches verified data directly via existing services:
-- app.services.employee_service
-- app.services.attendance_service
-- app.services.leave_service
-- app.services.salary_service
+- app.services.employee_service   (profiles, directory, department headcount)
+- app.services.attendance_service (summaries, rankings: overtime / late / absent)
+- app.services.leave_service      (applications, balances)
+- app.services.salary_service     (payslips, payroll summary)
 - app/data/policies.json
 
+Time periods (resolve_period, D-029): "August 2024" is used as given; a month without a year means the
+most recent such month that has records; "this month" falls back to the latest month with data when
+the current month has none; "last month" is the previous calendar month.
+
 Enforces RBAC and data isolation rules before passing context to the LLM.
-No arbitrary SQL is generated or executed by the LLM.
+No arbitrary SQL is generated or executed by the LLM, and this module runs no queries of its own.
 """
 
 import calendar
@@ -31,11 +35,10 @@ from datetime import date
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.ai.guardrails import check_rbac_access
-from app.database.models import Attendance, AttendanceStatus, Employee, Leave, Salary, User, UserRole
+from app.database.models import Employee, User, UserRole
 from app.services import attendance_service, employee_service, leave_service, salary_service
 
 
@@ -51,6 +54,9 @@ class Intent(str, Enum):
     POLICY = "POLICY"
     GENERAL = "GENERAL"
     UNKNOWN = "UNKNOWN"
+
+
+COMPANY_WIDE_ROLES = (UserRole.ADMIN.value, UserRole.HR.value)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +116,7 @@ def classify_intent(question: str) -> Intent:
     # 2. Salary cues
     salary_patterns = [
         r"\bsalary\b",
+        r"\bsalaries\b",
         r"\bpayslip\b",
         r"\bpay slip\b",
         r"\bpayroll\b",
@@ -141,6 +148,8 @@ def classify_intent(question: str) -> Intent:
         r"\bclock-in\b",
         r"\bclock out\b",
         r"\bclock-out\b",
+        r"\blate\b",
+        r"\blatecomers?\b",
         r"\blate entry\b",
         r"\blate entries\b",
         r"\blate arrival\b",
@@ -179,10 +188,11 @@ def classify_intent(question: str) -> Intent:
     if any(re.search(pat, q_lower) for pat in leave_patterns):
         return Intent.LEAVE
 
-    # 5. Employee cues (designation, department, manager, profile)
+    # 5. Employee cues (designation, department, manager, profile, directory, headcount)
     employee_patterns = [
         r"\bdesignation\b",
         r"\bdepartment\b",
+        r"\bdepartments\b",
         r"\bmanager\b",
         r"\breporting to\b",
         r"\breports to\b",
@@ -192,8 +202,14 @@ def classify_intent(question: str) -> Intent:
         r"\bjoined\b",
         r"\bprofile\b",
         r"\bteam member\b",
-        r"\ball employees\b",
+        r"\ball employees?\b",
         r"\blist employees\b",
+        r"\bevery employee\b",
+        r"\bemployee directory\b",
+        r"\bpersonal (information|info|details|data)\b",
+        r"\bhow many (employees|people|staff)\b",
+        r"\bnumber of (employees|people|staff)\b",
+        r"\bheadcount\b",
     ]
     if any(re.search(pat, q_lower) for pat in employee_patterns):
         return Intent.EMPLOYEE
@@ -236,25 +252,116 @@ MONTH_NAMES = {
     "december": 12, "dec": 12,
 }
 
+_SELF_RX = re.compile(r"\b(my|mine|me|i|myself)\b")
+_THIS_MONTH_RX = re.compile(r"\b(this|current) month\b")
+_LAST_MONTH_RX = re.compile(r"\b(last|previous|past) month\b")
+
+# "another employee's salary", "someone else's leave" — another person, but nobody named
+_UNNAMED_OTHER_RX = re.compile(
+    r"\b(another|other|different|some other) (employee|employees|person|people|colleague|staff|team ?member)"
+    r"|\b(someone|somebody|anyone|anybody) else\b"
+    r"|\bcolleagues?'?s?\b|\bco-?workers?'?s?\b|\bpeers?'?s?\b"
+)
+
 
 def extract_month_and_year(question: str) -> Tuple[Optional[int], Optional[int]]:
-    """Extract month (1-12) and year from question text if specified."""
+    """
+    Extract an explicit month (1-12) and year from the question text.
+
+    A missing part is returned as None; resolve_period() decides what a month without a year
+    (or "this month") means, based on the data that exists.
+    """
     q_lower = question.lower()
     found_month = None
     for name, num in MONTH_NAMES.items():
-        if re.search(r"\b" + name + r"\b", q_lower):
+        if name == "may":
+            # "May I see…" is not the month
+            pattern = r"\b(in|of|for|during|since|until|from|to)\s+may\b|\bmay\s+20[0-9]{2}\b"
+        else:
+            pattern = r"\b" + name + r"\b"
+        if re.search(pattern, q_lower):
             found_month = num
             break
 
     found_year = None
-    year_match = re.search(r"\b(202[0-9])\b", question)
+    year_match = re.search(r"\b(20[0-9]{2})\b", question)
     if year_match:
         found_year = int(year_match.group(1))
-    elif found_month:
-        # Default to 2024 for demo dataset when month is mentioned
-        found_year = 2024
 
     return found_month, found_year
+
+
+def _period_label(month: Optional[int], year: Optional[int]) -> str:
+    if month and year:
+        return f"{calendar.month_name[month]} {year}"
+    if year:
+        return f"the year {year}"
+    return "all recorded dates"
+
+
+def _period_bounds(month: Optional[int], year: Optional[int]) -> Tuple[Optional[date], Optional[date]]:
+    if month and year:
+        return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
+    if year:
+        return date(year, 1, 1), date(year, 12, 31)
+    return None, None
+
+
+def resolve_period(
+    db: Session,
+    question: str,
+    source: str = "attendance",
+    today: Optional[date] = None,
+) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+    """
+    Resolve the period a question refers to (D-029).
+
+    Returns (month, year, note). `note` is a sentence for the LLM context when an assumption was
+    made, so the answer can say which period it describes. `source` selects which data defines
+    "has records": "attendance" (attendance table) or "salary" (payroll rows).
+    """
+    today = today or date.today()
+    current = (today.year, today.month)
+    month, year = extract_month_and_year(question)
+    if month and year:
+        return month, year, None
+
+    q_lower = question.lower()
+    periods = (
+        salary_service.get_payroll_periods(db) if source == "salary" else attendance_service.get_months_with_data(db)
+    )
+    past_periods = [p for p in periods if p <= current]
+
+    if month:
+        years = [y for y, m in past_periods if m == month]
+        year = max(years) if years else (today.year if month <= today.month else today.year - 1)
+        note = f"Note: no year was given, so the most recent {calendar.month_name[month]} ({year}) is used."
+        return month, year, note
+
+    if year:
+        return None, year, None
+
+    if _THIS_MONTH_RX.search(q_lower):
+        if current in periods or not past_periods:
+            return today.month, today.year, None
+        latest_year, latest_month = max(past_periods)
+        note = (
+            f"Note: there are no records yet for {_period_label(today.month, today.year)}; "
+            f"the figures are for {_period_label(latest_month, latest_year)}, the most recent month with data."
+        )
+        return latest_month, latest_year, note
+
+    if _LAST_MONTH_RX.search(q_lower):
+        if today.month == 1:
+            return 12, today.year - 1, None
+        return today.month - 1, today.year, None
+
+    return None, None, None
+
+
+def refers_to_unnamed_other(question: str) -> bool:
+    """True for "another employee's salary"-style questions that point at someone without naming them."""
+    return bool(_UNNAMED_OTHER_RX.search(question.lower()))
 
 
 def find_target_employee(db: Session, question: str, current_user: User) -> Tuple[Optional[Employee], bool]:
@@ -263,18 +370,16 @@ def find_target_employee(db: Session, question: str, current_user: User) -> Tupl
 
     Returns:
         (target_employee, is_explicitly_other_employee)
+        (None, True) means "someone other than the caller who is not in the database / not named".
     """
     q_lower = question.lower()
 
     # Check for self-referential terms
-    self_terms = [r"\bmy\b", r"\bmine\b", r"\bme\b", r"\bi\b", r"\bmyself\b"]
-    is_self = any(re.search(term, q_lower) for term in self_terms)
+    is_self = bool(_SELF_RX.search(q_lower))
 
     # Search for known employees by code or name
-    all_emps = db.query(Employee).all()
     explicit_match = None
-
-    for emp in all_emps:
+    for emp in employee_service.get_all_employees(db):
         # Check employee code (e.g. EMP004)
         if emp.employee_code.lower() in q_lower:
             explicit_match = emp
@@ -289,13 +394,25 @@ def find_target_employee(db: Session, question: str, current_user: User) -> Tupl
         is_other = explicit_match.id != current_user.employee_id
         return explicit_match, is_other
 
+    # "another employee", "a colleague" — someone else, but nobody named
+    if refers_to_unnamed_other(question):
+        return None, True
+
+    # An employee code that matched nobody (e.g. "EMP999")
+    if re.search(r"\bemp\d+\b", q_lower):
+        return None, True
+
     if is_self:
-        current_emp = db.query(Employee).filter(Employee.id == current_user.employee_id).first()
-        return current_emp, False
+        return current_user.employee, False
 
     # Check if question refers to a third person that does not exist in company DB
     # e.g., "of John Unknown", "was Bob present", "for Alice"
-    stopwords = {"the", "a", "an", "my", "our", "all", "each", "this", "company", "office", "any", "your", "latest", "standard", "designation", "department", "salary", "attendance", "leave", "overtime"}
+    stopwords = {
+        "the", "a", "an", "my", "our", "all", "each", "this", "that", "company", "office", "any", "your", "latest",
+        "standard", "designation", "department", "salary", "attendance", "leave", "overtime", "late", "most",
+        "last", "previous", "current", "next", "today", "yesterday", "week", "month", "year", "me", "us",
+        "everyone", "everybody", "employees", "employee", "present", "absent",
+    } | set(MONTH_NAMES)
     for m in re.finditer(r"\b(?:of|for|about|who is|was|regarding|does)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", question, re.IGNORECASE):
         candidate = m.group(1).strip().lower()
         candidate_words = set(candidate.split())
@@ -303,8 +420,145 @@ def find_target_employee(db: Session, question: str, current_user: User) -> Tupl
             return None, True
 
     # Fallback to current user if asking generally about records without naming someone
-    current_emp = db.query(Employee).filter(Employee.id == current_user.employee_id).first()
-    return current_emp, False
+    return current_user.employee, False
+
+
+def _missing_target_response(
+    current_user: User,
+    intent: Intent,
+    question: str,
+    data_source: str,
+) -> Tuple[str, str, Optional[str]]:
+    """
+    Context when find_target_employee() found nobody. An unnamed "another employee" is refused for
+    roles that may not see other people's data of this kind; otherwise the user is asked to name them.
+    """
+    if not refers_to_unnamed_other(question):
+        return "No employee record found for the requested name.", data_source, None
+
+    company_wide = current_user.role in COMPANY_WIDE_ROLES
+    if (intent == Intent.SALARY and not company_wide) or (
+        intent in (Intent.ATTENDANCE, Intent.LEAVE) and current_user.role == UserRole.EMPLOYEE.value
+    ):
+        # target -1 never matches the caller or a subordinate, so the standard denial is returned
+        _, denial = check_rbac_access(current_user, intent.value, target_employee_id=-1)
+        return denial, data_source, denial
+    return (
+        "No specific employee was named in the question. Ask the user which employee they mean "
+        "(name or employee code) instead of guessing."
+    ), data_source, None
+
+
+# ---------------------------------------------------------------------------
+# Ranking & Directory Helpers
+# ---------------------------------------------------------------------------
+
+_RANKING_PATTERNS = {
+    "overtime": re.compile(
+        r"\b(highest|most|max|maximum|top)\b.{0,20}\bovertime\b|\bovertime\b.{0,15}\bthe most\b"
+    ),
+    "late": re.compile(
+        r"\b(most|highest|max|maximum|top)\b.{0,20}\b(late|lateness|latecomers?)\b"
+        r"|\blate\b.{0,15}\b(the )?most\b|\bmost often late\b|\blatecomers?\b"
+    ),
+    "absent": re.compile(
+        r"\b(most|highest|max|maximum|top)\b.{0,20}\b(absent|absences|absenteeism)\b"
+        r"|\babsent\b.{0,15}\b(the )?most\b"
+    ),
+}
+
+_RANKING_LABELS = {"overtime": "overtime", "late": "late arrivals", "absent": "absences"}
+_RANKING_DENIAL_NAMES = {"overtime": "overtime", "late": "late-arrival", "absent": "absence"}
+
+
+def detect_ranking_metric(question: str) -> Optional[str]:
+    """'overtime' | 'late' | 'absent' for "who worked the most overtime / was late the most / was absent the most"."""
+    q_lower = question.lower()
+    for metric, rx in _RANKING_PATTERNS.items():
+        if rx.search(q_lower):
+            return metric
+    return None
+
+
+def _format_minutes(minutes: int) -> str:
+    return f"{minutes} minutes ({minutes // 60} hours {minutes % 60} minutes)"
+
+
+def _days(count: int) -> str:
+    return f"{count} day" if count == 1 else f"{count} days"
+
+
+def _ranking_context(
+    db: Session,
+    current_user: User,
+    metric: str,
+    question: str,
+) -> Tuple[str, str, Optional[str]]:
+    """Company-wide ranking (HR/Admin only, unchanged from the original overtime rule)."""
+    label = _RANKING_LABELS[metric]
+    if current_user.role not in COMPANY_WIDE_ROLES:
+        denial = (
+            f"Access denied: Company-wide {_RANKING_DENIAL_NAMES[metric]} rankings are restricted to HR and Administrators."
+        )
+        return denial, "attendance_database", denial
+
+    month, year, note = resolve_period(db, question)
+    start_d, end_d = _period_bounds(month, year)
+    period = _period_label(month, year)
+    ranked = attendance_service.rank_employees(db, metric, start_date=start_d, end_date=end_d, limit=5)
+    if not ranked:
+        context = f"No {label} records found for {period}."
+        return (f"{context}\n{note}" if note else context), "attendance_database", None
+
+    lines = [f"Employees ranked by {label} for {period} (calculated by the HR system; equal values share a rank):"]
+    for item in ranked:
+        rank = 1 + sum(1 for other in ranked if other["value"] > item["value"])
+        who = f"{item['employee_name']} ({item['employee_code']}, {item['department']})"
+        if metric == "overtime":
+            detail = f"total overtime {_format_minutes(item['overtime_minutes'])}"
+        elif metric == "late":
+            detail = f"{_days(item['late_days'])} late ({item['late_minutes']} late minutes in total)"
+        else:
+            detail = f"{_days(item['absent_days'])} absent"
+        lines.append(f"{rank}. {who}: {detail}")
+    if note:
+        lines.append(note)
+    return "\n".join(lines), "attendance_database", None
+
+
+_HEADCOUNT_RX = re.compile(
+    r"\bhow many (employees|people|staff)\b|\bnumber of (employees|people|staff)\b|\bheadcount\b"
+    r"|\bdepartments\b|\bdepartment (size|strength|stats|statistics)\b"
+)
+_DIRECTORY_RX = re.compile(
+    r"\ball employees?\b|\blist (all )?employees\b|\bemployee directory\b|\bevery employee\b|\ball staff\b"
+    r"|\beveryone'?s?\b|\beverybody'?s?\b"
+)
+
+
+def _headcount_context(db: Session, current_user: User, question: str) -> Tuple[str, str, Optional[str]]:
+    """Department headcount — same roles and scope as GET /departments (manager → own team)."""
+    if current_user.role == UserRole.EMPLOYEE.value:
+        denial = "Access denied: Headcount and department statistics are restricted to HR, Administrators and managers."
+        return denial, "employee_database", denial
+
+    scope_ids = employee_service.get_scope_employee_ids(db, current_user)
+    departments = employee_service.list_departments(db, scope_ids=scope_ids)
+    q_lower = question.lower()
+    asked = [d for d in departments if d["name"].lower() in q_lower]
+    scope_text = "company-wide" if scope_ids is None else "limited to you and your direct reports"
+
+    lines = [f"Department headcount from the HR system ({scope_text}):"]
+    for d in asked or departments:
+        managers = ", ".join(d["managers"]) or "none"
+        lines.append(
+            f"- {d['name']}: {d['employee_count']} employees ({d['active_count']} active) | managers: {managers}"
+        )
+    if not asked:
+        total = sum(d["employee_count"] for d in departments)
+        active = sum(d["active_count"] for d in departments)
+        lines.append(f"Total: {total} employees ({active} active) in {len(departments)} departments.")
+    return "\n".join(lines), "employee_database", None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +605,13 @@ def retrieve_policy_context(
     return context, hits[0]["file_name"], hits[0]["page"], sources
 
 
+_COMPANY_SALARY_RX = re.compile(
+    r"\btotal (salary|salaries|payroll|net pay)\b|\bcompany(-wide)? (salary|salaries|payroll)\b"
+    r"|\bpayroll (summary|total|cost)\b|\ball (the )?(employees'? )?salar(y|ies)\b"
+    r"|\bsalar(y|ies) of (all|every)|\bevery(one|body)'?s? salar|\ball employees'? salar"
+)
+
+
 def retrieve_hr_context(
     db: Session,
     current_user: User,
@@ -395,33 +656,45 @@ def retrieve_hr_context(
     # 2. SALARY INTENT
     # -----------------------------------------------------------------------
     if intent == Intent.SALARY:
-        month, year = extract_month_and_year(question)
-        q_lower = question.lower()
+        month, year, note = resolve_period(db, question, source="salary")
 
-        # Check for company-wide payroll summary inquiry
-        is_summary_query = any(k in q_lower for k in ["total salary", "company salary", "payroll summary", "total payroll"])
-        if is_summary_query:
-            if current_user.role not in [UserRole.ADMIN.value, UserRole.HR.value]:
+        # Company-wide payroll inquiry ("total payroll", "show all salaries", "payroll for 2024" with nobody
+        # named) → summary only, never a per-person salary table (AGENTS.md §3.6)
+        q_lower = question.lower()
+        target_emp, is_other = find_target_employee(db, question, current_user)
+        is_company_query = bool(_COMPANY_SALARY_RX.search(q_lower)) or (
+            bool(re.search(r"\bpayroll\b", q_lower)) and target_emp is not None and not is_other
+            and not _SELF_RX.search(q_lower)
+        )
+        if is_company_query:
+            if current_user.role not in COMPANY_WIDE_ROLES:
                 denial = "Access denied: Company-wide salary summaries are restricted to HR and Administrators."
                 return denial, "salary_database", denial
 
+            if month is None and year is None:
+                latest = salary_service.get_latest_payroll_period(db)
+                if latest:
+                    month, year = latest
+                    note = "Note: no period was given, so the latest payroll month is used."
             summary = salary_service.get_salary_summary(db, month=month, year=year)
+            period = _period_label(month, year)
+            if not summary["record_count"]:
+                context = f"No salary records found for {period}."
+                return (f"{context}\n{note}" if note else context), "salary_database", None
             context = (
-                f"Company Payroll Summary:\n"
-                f"- Month: {summary.get('month') or 'All'}, Year: {summary.get('year') or 'All'}\n"
-                f"- Record Count: {summary.get('record_count')}\n"
-                f"- Total Gross Salary: ₹{summary.get('total_gross_salary'):,.2f}\n"
-                f"- Total PF Deductions: ₹{summary.get('total_pf_deductions'):,.2f}\n"
-                f"- Total Other Deductions: ₹{summary.get('total_other_deductions'):,.2f}\n"
-                f"- Total Overtime Paid: ₹{summary.get('total_overtime_amount'):,.2f}\n"
-                f"- Total Net Salary: ₹{summary.get('total_net_salary'):,.2f}"
+                f"Company Payroll Summary for {period}:\n"
+                f"- Salary Records: {summary['record_count']} ({summary['employee_count']} employees)\n"
+                f"- Total Gross Salary: ₹{summary['total_gross_salary']:,.2f}\n"
+                f"- Total PF Deductions: ₹{summary['total_pf']:,.2f}\n"
+                f"- Total Other Deductions: ₹{summary['total_deductions']:,.2f}\n"
+                f"- Total Overtime Paid: ₹{summary['total_overtime_amount']:,.2f}\n"
+                f"- Total Net Salary: ₹{summary['total_net_salary']:,.2f}"
             )
-            return context, "salary_database", None
+            return (f"{context}\n{note}" if note else context), "salary_database", None
 
         # Individual employee salary inquiry
-        target_emp, is_other = find_target_employee(db, question, current_user)
         if not target_emp:
-            return "No employee record found for the requested name.", "salary_database", None
+            return _missing_target_response(current_user, intent, question, "salary_database")
 
         # RBAC Check: Employees/Managers cannot view other employees' salary
         allowed, denial_reason = check_rbac_access(current_user, "SALARY", target_employee_id=target_emp.id)
@@ -434,7 +707,7 @@ def retrieve_hr_context(
         if year:
             salaries = [s for s in salaries if s.year == year]
         if not salaries:
-            period_str = f" for month {month}/{year}" if month and year else ""
+            period_str = f" for {_period_label(month, year)}" if month or year else ""
             return f"No salary records found for {target_emp.name}{period_str}.", "salary_database", None
 
         lines = [f"Salary records for {target_emp.name} ({target_emp.employee_code}):"]
@@ -445,83 +718,57 @@ def retrieve_hr_context(
                 f"Deductions: ₹{s.deductions:,.2f} | Overtime Amount: ₹{s.overtime_amount:,.2f} | "
                 f"Net Salary: ₹{s.net_salary:,.2f}"
             )
+        if note:
+            lines.append(note)
         return "\n".join(lines), "salary_database", None
 
     # -----------------------------------------------------------------------
     # 3. ATTENDANCE INTENT
     # -----------------------------------------------------------------------
     if intent == Intent.ATTENDANCE:
-        month, year = extract_month_and_year(question)
-        q_lower = question.lower()
-
-        # Check for company-wide highest overtime inquiry (e.g. "Who worked the highest overtime in September?")
-        is_highest_ot = "highest overtime" in q_lower or "most overtime" in q_lower or "max overtime" in q_lower
-        if is_highest_ot:
-            if current_user.role not in [UserRole.ADMIN.value, UserRole.HR.value]:
-                denial = "Access denied: Company-wide overtime rankings are restricted to HR and Administrators."
-                return denial, "attendance_database", denial
-
-            # Query attendance table for highest overtime
-            ot_query = db.query(
-                Attendance.employee_id,
-                func.sum(Attendance.overtime_minutes).label("total_ot"),
-            )
-            if month and year:
-                start_d = date(year, month, 1)
-                end_d = date(year, month, calendar.monthrange(year, month)[1])
-                ot_query = ot_query.filter(Attendance.attendance_date >= start_d, Attendance.attendance_date <= end_d)
-
-            top_ot = ot_query.group_by(Attendance.employee_id).order_by(desc("total_ot")).first()
-            if top_ot and top_ot.total_ot > 0:
-                top_emp = db.query(Employee).filter(Employee.id == top_ot.employee_id).first()
-                emp_name = top_emp.name if top_emp else f"Employee #{top_ot.employee_id}"
-                emp_code = top_emp.employee_code if top_emp else ""
-                hours = top_ot.total_ot // 60
-                mins = top_ot.total_ot % 60
-                period_str = f"in {calendar.month_name[month]} {year}" if month and year else ""
-                context = (
-                    f"Highest Overtime Record {period_str}:\n"
-                    f"- Employee: {emp_name} ({emp_code})\n"
-                    f"- Total Overtime: {top_ot.total_ot} minutes ({hours} hours {mins} minutes)"
-                )
-                return context, "attendance_database", None
-            else:
-                return "No overtime records found for the requested period.", "attendance_database", None
+        # Company-wide rankings: "Who worked the most overtime?", "Who was late the most?"
+        metric = detect_ranking_metric(question)
+        if metric:
+            return _ranking_context(db, current_user, metric, question)
 
         # Individual attendance inquiry
         target_emp, is_other = find_target_employee(db, question, current_user)
         if not target_emp:
-            return "No employee record found for the requested name.", "attendance_database", None
+            return _missing_target_response(current_user, intent, question, "attendance_database")
 
         # RBAC Check: Employees cannot view other employees' attendance
         allowed, denial_reason = check_rbac_access(current_user, "ATTENDANCE", target_employee_id=target_emp.id)
         if not allowed:
             return denial_reason, "attendance_database", denial_reason
 
-        # Date range filtering
-        start_d, end_d = None, None
-        if month and year:
-            start_d = date(year, month, 1)
-            end_d = date(year, month, calendar.monthrange(year, month)[1])
-
+        month, year, note = resolve_period(db, question)
+        start_d, end_d = _period_bounds(month, year)
+        period_str = _period_label(month, year)
         summary = attendance_service.get_attendance_summary(
             db, employee_id=target_emp.id, start_date=start_d, end_date=end_d
         )
 
-        ot_hours = summary["total_overtime_minutes"] // 60
-        ot_mins = summary["total_overtime_minutes"] % 60
-        period_str = f"{calendar.month_name[month]} {year}" if month and year else "All recorded dates"
+        if summary["total_days"] == 0:
+            context = (
+                f"No attendance records found for {target_emp.name} ({target_emp.employee_code}) for {period_str}. "
+                f"Attendance data is not available for the requested period."
+            )
+            return (f"{context}\n{note}" if note else context), "attendance_database", None
 
         context = (
             f"Attendance summary for {target_emp.name} ({target_emp.employee_code}) for {period_str}:\n"
             f"- Total Days Recorded: {summary['total_days']}\n"
             f"- Present Days: {summary['present_days']}\n"
             f"- Absent Days: {summary['absent_days']}\n"
+            f"- Half Days: {summary['half_day_days']}\n"
+            f"- Leave Days: {summary['leave_days']}\n"
             f"- Late Clock-Ins: {summary['late_days']} (late entries after 09:15 AM)\n"
             f"- Overtime Days: {summary['overtime_days']}\n"
-            f"- Total Overtime: {summary['total_overtime_minutes']} minutes ({ot_hours} hours {ot_mins} minutes)\n"
+            f"- Total Overtime: {_format_minutes(summary['total_overtime_minutes'])}\n"
             f"- Total Working Minutes: {summary['total_working_minutes']}"
         )
+        if note:
+            context += f"\n{note}"
         return context, "attendance_database", None
 
     # -----------------------------------------------------------------------
@@ -530,7 +777,7 @@ def retrieve_hr_context(
     if intent == Intent.LEAVE:
         target_emp, is_other = find_target_employee(db, question, current_user)
         if not target_emp:
-            return "No employee record found for the requested name.", "leave_database", None
+            return _missing_target_response(current_user, intent, question, "leave_database")
 
         # RBAC Check: Employees cannot view other employees' leave applications
         allowed, denial_reason = check_rbac_access(current_user, "LEAVE", target_employee_id=target_emp.id)
@@ -571,9 +818,15 @@ def retrieve_hr_context(
     # -----------------------------------------------------------------------
     if intent == Intent.EMPLOYEE:
         q_lower = question.lower()
-        if "all employees" in q_lower or "list employees" in q_lower or "employee directory" in q_lower:
-            if current_user.role not in [UserRole.ADMIN.value, UserRole.HR.value]:
-                denial = "Access denied: Employee directory listing is restricted to HR and Administrators."
+        if _HEADCOUNT_RX.search(q_lower):
+            return _headcount_context(db, current_user, question)
+
+        if _DIRECTORY_RX.search(q_lower):
+            if current_user.role not in COMPANY_WIDE_ROLES:
+                denial = (
+                    "Access denied: The employee directory and other employees' personal information "
+                    "are restricted to HR and Administrators."
+                )
                 return denial, "employee_database", denial
 
             all_emps = employee_service.get_all_employees(db)
@@ -584,7 +837,10 @@ def retrieve_hr_context(
 
         target_emp, is_other = find_target_employee(db, question, current_user)
         if not target_emp:
-            return "No employee record found matching the inquiry.", "employee_database", None
+            context, source, denial = _missing_target_response(current_user, intent, question, "employee_database")
+            if context.startswith("No employee record found"):
+                context = "No employee record found matching the inquiry."
+            return context, source, denial
 
         manager_name = target_emp.manager.name if target_emp.manager else "None (Executive)"
         context = (
