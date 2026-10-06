@@ -16,8 +16,10 @@ is an **AI HR Assistant**: users ask questions in plain English — *"How many d
 - filtered by **role-based permissions** (an employee can never see a colleague's salary, even via the chat),
 - protected against **prompt injection**, and **logged** for audit.
 
-The look and module layout follow the reference HRMS `https://hrms.nectorinternational.com/` (top navbar, navy/blue
-palette, role-gated menu) — see `PROJECT_DECISIONS.md` D-002.
+The module layout and roles follow the reference HRMS `https://hrms.nectorinternational.com/` (D-002); the visual design is
+a modern SaaS dashboard (indigo accent, collapsible sidebar, light/dark mode, ⌘K command palette) — see
+[`frontend/DESIGN.md`](frontend/DESIGN.md) and `PROJECT_DECISIONS.md` D-026. *(The redesign is rolling out in two parts; progress:
+`frontend/REDESIGN_NOTES.md`.)*
 
 ## 2. Technology
 
@@ -29,7 +31,7 @@ palette, role-gated menu) — see `PROJECT_DECISIONS.md` D-002.
 | AI | OpenAI-compatible Chat Completions API (configured for OpenRouter `openai/gpt-4o-mini`) |
 | RAG | pypdf / python-docx / txt → cleaning + chunking → sparse term vectors → BM25 retrieval (stored in MySQL) |
 | Reports | openpyxl (.xlsx) |
-| Frontend | Bun 1.4 · React 19 · TypeScript · Tailwind CSS v4 · shadcn-style components · lucide-react · recharts |
+| Frontend | Bun 1.4 · React 19 · TypeScript · Tailwind CSS v4 · shadcn-style components on Radix primitives · lucide-react · recharts |
 | Tests | Standalone Python test scripts (FastAPI TestClient) against the dev DB · `scripts/run_tests.py` |
 
 ## 3. How it works
@@ -156,10 +158,11 @@ frontend/
   src/index.ts           Bun server: /api/* proxy + SPA
   src/App.tsx            providers, routes, role guards
   src/lib/               api.ts, auth.tsx, router.tsx, types.ts, nav.ts, format.ts, useFetch.ts
-  src/components/        AppShell (top navbar), tables, badges, modals, charts, payslip, markdown renderer
+  src/components/        ui/ primitives (Radix), layout/ (sidebar shell, ⌘K palette, bell), tables, badges, dialogs, charts, payslip, markdown
   src/pages/             Login, Dashboard, Employees, EmployeeForm, EmployeeDetail, Departments, Attendance,
                          Leave, Payroll, Documents, Reports, Chat, Settings
-  styles/globals.css     theme tokens (reference palette)
+  styles/globals.css     design tokens (light + dark), status colours, motion
+  DESIGN.md              design system v2 (tokens, components, patterns)  ·  REDESIGN_NOTES.md  redesign working notes
 scripts/
   seed_db.py             demo data (2024) — resets demo employees/users when run
   generate_demo_month.py current-month demo attendance + leaves (idempotent)
@@ -176,7 +179,7 @@ documents/               uploaded files (git-ignored)
 
 | Module | What it does |
 |---|---|
-| Dashboard | HR/Admin: KPIs (employees, present, absent, on leave, late, overtime), attendance by department, monthly trend, overtime & late leaders, leave usage, recent leaves. Employee/Manager: today's check-in/out, month stats, leave balance, latest payslip, team snapshot (managers). |
+| Dashboard | Four role-specific layouts. HR/Admin: KPIs (employees, present, absent, on leave, late, overtime), attendance by department, monthly trend, overtime & late leaders, leave usage, recent leaves. Employee/Manager: today's check-in/out, month stats, leave balance, latest payslip, team snapshot (managers). |
 | Employees | Directory with search/filters, add/edit (optionally creating a login; monthly gross salary for payroll), deactivate (soft delete), detail page with attendance/leave/salary tabs. |
 | Departments | Cards with headcount, active count, designations, managers. |
 | Attendance | Self check-in/out (late after 9:15, OT beyond 8 h worked), my history + monthly summary, daily sheet and record search for HR/managers, HR "mark attendance". |
@@ -244,7 +247,7 @@ Frontend: `cd frontend && bunx tsc --noEmit -p . && bun run build`.
 Browser QA (both servers running, Microsoft Edge installed):
 ```powershell
 pip install -r requirements-dev.txt     # playwright (uses the installed Edge, no browser download)
-python scripts/ui_qa.py                 # 4 roles × 1400/390 px × all pages -> screenshots + "0 issue(s)"
+python scripts/ui_qa.py                 # 4 roles × 1440/1024/390 px × all pages -> screenshots + "0 issue(s)"
 python scripts/ui_qa.py --roles admin --widths 1280 --out qa_shots
 ```
 

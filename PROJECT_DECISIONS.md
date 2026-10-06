@@ -18,6 +18,9 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
 - **Impact:** Interns/reviewers must be able to explain React + Bun. README documents the frontend architecture.
 
 ### D-002 — The reference site defines UI/UX and module layout only; the PRD defines scope
+- **Status:** the **visual and navigation presentation** part (top navbar, navy palette, `#f1f5f9` background, Inter) is
+  **SUPERSEDED by D-026**. Module list/order, role-gated menu, role-specific greetings, status-badge conventions and the
+  "reference = UI/UX only, PRD = scope" rule still stand.
 - **Date:** 2026-10-05
 - **Decision:** `https://hrms.nectorinternational.com/` (Nector Foods HRMS, Angular + PrimeNG/Material) is used for: top
   navbar layout, palette (navy `#1e3a5f`, accent `#2563eb`, bg `#f1f5f9`), Inter font, module names/order, role-gated menu,
@@ -240,8 +243,54 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
 - **Impact:** Run it once per new month for demos (it was run for 2026-09 and 2026-10 in the dev DB). Tests do not depend on it.
 
 ### D-025 — Desktop navbar density breakpoints
+- **Status:** **SUPERSEDED by D-026** (the top navbar was replaced by a sidebar; the breakpoints below no longer apply).
 - **Date:** 2026-10-05 (session 2)
 - **Decision:** Hamburger menu below 1280 px; 1280–1535 px text-only links and avatar-only profile button; ≥ 1536 px icons +
   user name. Scroll arrows appear whenever the link row still overflows; the active item is scrolled into view.
 - **Reason:** At 1400 px the admin's 11 items overflowed and "AI Assistant"/"Settings" were hidden with no cue (found in browser QA).
 - **Impact:** AGENTS.md §7 updated; `scripts/ui_qa.py` asserts no clipped item without a scroll cue at ≥ 1280 px.
+
+### D-026 — Frontend redesign: premium SaaS look, sidebar navigation, light/dark (supersedes the visual/navigation part of D-002 and all of D-025)
+- **Date:** 2026-10-05 (redesign Part 1)
+- **Decision:** The product owner rejected the HRMS-reference look and explicitly asked for a modern, premium SaaS dashboard
+  that is visibly different side by side. Per AGENTS.md's priority order (newer explicit owner instruction > AGENTS.md > D-002),
+  the **visual and navigation presentation** changes; everything else is kept:
+  - Navigation: collapsible **left sidebar** (≥1280px expanded, 768–1279px icon rail, <768px drawer) + slim 56px top bar
+    (breadcrumb, ⌘/Ctrl+K command palette, notification bell for approver roles, theme toggle, profile menu). Menu order,
+    module list and role filtering are unchanged (same role sets as the backend); items are grouped Overview/People/Workspace/
+    Insights/Admin.
+  - Visual language: indigo accent (`#4f46e5` light / `#818cf8` dark), slate neutrals, flat 12px-radius cards with 1px borders,
+    8px controls, one soft shadow level for floating layers only, Inter with tabular numerals, 150–250ms motion that honours
+    `prefers-reduced-motion`. Fixed colour per status (present/absent/late/half/leave/neutral) shared by badges, charts, heat-map.
+  - **Dark mode**: system by default, toggle in the top bar (and on Login), persisted in `localStorage` (`hr_theme`), applied
+    before first paint. All colours/radii/shadows are tokens in `styles/globals.css`; no hex in components.
+  - Role-specific dashboards (admin / hr / manager / employee) with intentionally different layouts, built **only** from
+    existing endpoints (no new API, no fake data). Widgets without real data are derived client-side or hidden (e.g. no
+    notification bell for employees; no deltas on today-only KPIs).
+- **Reason:** owner instruction; the old look was judged dated. The reference site remains the module/role reference only.
+- **Alternatives:** recolouring the old top-navbar layout (rejected: "must not look like a recolour"); MUI/Ant Design (forbidden —
+  fights the shadcn/Tailwind stack).
+- **Impact:** `AGENTS.md` §7 rewritten; `frontend/DESIGN.md` is the design source of truth; `scripts/ui_qa.py` now asserts the
+  sidebar shell instead of the top navbar; D-025's breakpoints are obsolete. No backend, API-contract, auth, role-rule or
+  business-logic change. Done in two sessions: Part 1 (tokens, primitives, shell, Login/Dashboard/Employees — awaiting owner
+  approval) and Part 2 (remaining 10 pages + quality pass). Working notes: `frontend/REDESIGN_NOTES.md`.
+
+### D-027 — Frontend dependencies added for the redesign (Radix primitives only)
+- **Date:** 2026-10-05
+- **Decision:** Added `@radix-ui/react-dialog` (Modal/ConfirmDialog/drawers/command palette — focus trap, Escape, scroll lock),
+  `@radix-ui/react-dropdown-menu` (row/profile/theme menus), `@radix-ui/react-tooltip` (icon-rail labels), `@radix-ui/react-popover`
+  (notification bell), `@radix-ui/react-switch` (Switch primitive for Part 2 forms/settings). They match the existing
+  shadcn/Radix stack (`react-select`, `react-label`, `react-slot` were already used).
+- **Not added:** `framer-motion` (CSS keyframes cover every needed animation), `@tanstack/react-table` (sorting + pagination are
+  ~60 lines inside `DataTable`), `cmdk` (palette built on Radix Dialog), any chart/icon library (recharts + lucide-react stay).
+- **Reason:** accessibility-critical behaviour (focus trapping, roving focus, ARIA) should not be hand-rolled.
+- **Impact:** +5 small packages; production bundle ≈ 923 KB minified (was ≈ 898 KB; KI-006 code-splitting still open).
+
+### D-028 — Temporary "legacy bridge" for dark mode on not-yet-redesigned pages
+- **Date:** 2026-10-05
+- **Decision:** While Part 2 is pending, `globals.css` re-points Tailwind's raw palette variables (`--color-white`, `slate-*`,
+  `emerald-50`, …) at design tokens under `.dark`, and keeps the old aliases (`navy`, `ink`, `page`, `brand-light`) mapped to tokens,
+  so un-redesigned pages stay readable in both themes and inherit the new colours.
+- **Reason:** the theme toggle is global; shipping a half-broken dark mode between sessions would mislead the owner's review.
+- **Impact:** **Delete the bridge and the legacy aliases at the end of Part 2** (see `REDESIGN_NOTES.md` §4). New code must not rely
+  on it: never use `text-white`/`bg-white`/raw palette classes — use tokens (`bg-brand text-brand-foreground`, `bg-surface`, …).
