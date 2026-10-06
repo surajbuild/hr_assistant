@@ -14,7 +14,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Project setup (FastAPI, MySQL, Alembic) | ✅ | Alembic head `f6a7b8c9d0e1` (holidays + attendance_corrections) |
 | Authentication (email/password, JWT) | ✅ | bcrypt, generic errors, inactive → 403; secrets ≥ 32 bytes enforced at startup (D-031) |
 | Rate limiting (`/auth/login`, `/chat`) | ✅ | In-memory, 429 + `Retry-After` (D-031; one worker, KI-031) |
-| Google OAuth | ⚠️ | Backend + tests; starts through the `/api` proxy; real Google round-trip not tried (KI-004); auto-provisioning needs an owner decision (KI-033) |
+| Google OAuth | ⚠️ | Backend + tests; starts through the `/api` proxy, redirect URI `…:3000/api/auth/google/callback` (D-041); real Google round-trip not tried (KI-004); auto-provisioning needs an owner decision (KI-033) |
 | RBAC + manager team scope | ✅ | `get_scope_employee_ids`; manager = self + direct reports (D-010) |
 | Self-approval of leave | ✅ | Blocked for every role incl. HR/Admin — product-owner decision D-022; UI explains it |
 | Employee management (CRUD, soft delete) | ✅ | + `monthly_gross_salary` (confidential, D-021) |

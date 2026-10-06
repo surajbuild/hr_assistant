@@ -291,7 +291,7 @@ documents/               uploaded files (git-ignored)
 | `JWT_ALGORITHM` / `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `HS256` / `60` |
 | `SESSION_SECRET_KEY` | Cookie session for OAuth state — **≥ 32 bytes**, required (the app refuses to start otherwise) |
 | `RATE_LIMIT_*`, `TRUSTED_PROXY_IPS` | Optional login/chat rate limits and the proxies whose `X-Forwarded-For` is trusted (see `.env.example`, D-031) |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Google OAuth (redirect `http://localhost:8000/auth/google/callback`) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Google OAuth (redirect `http://localhost:3000/api/auth/google/callback`, via the frontend proxy; D-041) |
 | `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` | OpenAI-compatible LLM endpoint |
 | `BACKEND_URL` | Where the Bun server proxies `/api/*` (default `http://localhost:8000`) |
 | `FRONTEND_URL` | Where Google login returns with `#token=` (default `http://localhost:3000`) |
@@ -341,11 +341,12 @@ The frontend calls everything under `/api`. Architecture: [`docs/ARCHITECTURE.md
 ## 11. Google OAuth setup (optional)
 
 1. Google Cloud Console → create project → OAuth consent screen (External; scopes `openid email profile`; add test users).
-2. Credentials → OAuth client ID → Web application. Authorized JavaScript origin `http://localhost:8000`;
-   redirect URI `http://localhost:8000/auth/google/callback`.
+2. Credentials → OAuth client ID → Web application. Authorized JavaScript origin `http://localhost:3000`;
+   redirect URI `http://localhost:3000/api/auth/google/callback` (D-041; this is what `.env.example` ships and is the only
+   one that works in Docker). `http://localhost:8000/auth/google/callback` is only for running the backend directly.
 3. Put the client ID/secret in `.env`. The login page's "Sign in with Google" goes (through the `/api` proxy) to
    `/api/auth/google/login?next=frontend` and returns to `FRONTEND_URL/login#token=…`. For a deployment, the redirect URI can
-   also be `<frontend>/api/auth/google/callback`.
+   use your public `<frontend>/api/auth/google/callback`.
 
 ## 12. Current status, known issues, remaining work
 

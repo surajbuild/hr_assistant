@@ -372,7 +372,7 @@ wrong password (no account enumeration).
 ```
 SPA "Sign in with Google" ──► /api/auth/google/login?next=frontend   (full page navigation through the Bun proxy)
 backend: session["oauth_next"]="frontend"; Authlib stores state in the signed session cookie; 302 ──► Google consent
-Google ──► GOOGLE_REDIRECT_URI (/auth/google/callback, directly or via <frontend>/api/...)
+Google ──► GOOGLE_REDIRECT_URI (default <frontend>/api/auth/google/callback via the proxy, D-041; the backend /auth/google/callback also works when it is reachable directly)
 backend: exchange code, read userinfo (sub, email, name) ──► auth_service.resolve_or_create_google_user
    google_id known ─► that user · email known without google_id ─► link · email linked to another google_id ─► 409
    unknown ─► new employee profile (department "General") + user with role "employee", password_hash NULL

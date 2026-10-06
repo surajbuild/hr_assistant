@@ -435,3 +435,12 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
   mode; darkening `--status-present` itself would have shifted every badge, chart and calendar, which share that colour (D-026).
 - **Verification:** `ui_qa.py` 0 issues (4 roles × 1440/1024/390); axe WCAG 2.1 A/AA 0 violations on 22 page views in light and in
   dark; server pagination verified in the browser (KI-028); `tsc` + `bun run build` clean.
+
+### D-041 — Google OAuth redirect URI goes through the frontend proxy
+- **Date:** 2026-10-06
+- **Decision:** `GOOGLE_REDIRECT_URI` defaults to `http://localhost:3000/api/auth/google/callback` (`.env.example`, README §11) instead
+  of `http://localhost:8000/auth/google/callback`.
+- **Reason:** in Docker only port 3000 is published, so Google could never redirect the browser to `:8000`. The SPA already starts
+  the login through `/api/auth/google/login`, so the callback must use the same origin (the session cookie is set there too).
+- **Impact:** that URI must be registered in Google Cloud Console. `FRONTEND_URL` stays `http://localhost:3000`. Real Google
+  round-trip still unverified (KI-004).

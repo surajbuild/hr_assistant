@@ -54,7 +54,8 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 ### KI-004 — Google OAuth flow
 - Since session 5 the SPA button navigates to `/api/auth/google/login?next=frontend` (through the Bun proxy, so it also works
   in Docker where the backend is not published; verified: 302 to Google + `Set-Cookie: session=…` pass through the proxy).
-  `GOOGLE_REDIRECT_URI` may be the backend (`:8000/auth/google/callback`, local) or `<frontend>/api/auth/google/callback`.
+  `GOOGLE_REDIRECT_URI` is now `http://localhost:3000/api/auth/google/callback` (D-041, 2026-10-06; verified: login 302 to Google
+  carries that redirect_uri in the Docker stack). The URI must also be added to the OAuth client in Google Cloud Console.
   Earlier: the SPA button called `http://localhost:8000/auth/google/login?next=frontend`; the callback redirects to
   `FRONTEND_URL/login#token=…` (D-014). Verified in the browser on 2026-10-05: opening `/login#token=<valid JWT>` signs in,
   stores the token, strips the fragment and lands on `/dashboard`. Not verified: the real Google consent round-trip.

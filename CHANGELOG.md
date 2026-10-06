@@ -2,6 +2,14 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-06 (session 6 — Docker bring-up)
+
+### Changed
+- `GOOGLE_REDIRECT_URI` now `http://localhost:3000/api/auth/google/callback` so Google sign-in works in Docker (D-041, KI-004);
+  `.env.example`, README and `docs/ARCHITECTURE.md` updated.
+- Docker stack verified: 3 containers healthy, demo seed loaded, `generate_demo_month.py` run for Oct 2026, sample documents
+  uploaded as HR (2 docs, 3 chunks each), policy chat answer returned.
+
 ## 2026-10-06 (session 5 — hardening, corrections, holidays, payroll, pagination, Docker, docs, redesign Part 2)
 
 ### Added
