@@ -11,8 +11,8 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-002 | Tests run against the dev database (no separate test DB) | 🟡 | Tests | Mitigated — tests leave it byte-identical (D-023); separate DB still P2 |
 | KI-004 | Google OAuth browser flow not verified with a real Google account | 🟡 | Auth | Partially tested (token hand-off `#token=` verified; since session 5 the login starts through the `/api` proxy — 302 + session cookie verified) |
 | KI-005 | Bun dev server can't resolve **new** files imported via the `@/` alias until restarted | 🟡 | Frontend DX | Root cause found — restart `bun dev` after adding a file |
-| KI-006 | Frontend bundle ≈ 780 KB minified, no code-splitting | 🟡 | Frontend perf | Open |
-| KI-007 | No pagination on list endpoints/tables | 🟡 | API / UI | Partly done 2026-10-06 (D-035): `/employees`, `/attendance/records`, `/chat/logs`; UI uses it for Attendance records + audit log. `/leaves`, `/documents`, `/users`, `/salary` still return everything (small today) |
+| KI-006 | Frontend bundle ≈ 780 KB minified, no code-splitting | 🟡 | Frontend perf | Fixed 2026-10-07 (D-042): route pages lazy-loaded, largest chunk ≈ 407 KB. The shared React/Radix/recharts chunks are still large — vendor splitting is a further option |
+| KI-007 | No pagination on list endpoints/tables | 🟡 | API / UI | Partly done 2026-10-06 (D-035): `/employees`, `/attendance/records`, `/chat/logs`; UI uses it for Attendance records + audit log. `/users`, `/leaves`, `/documents` accept `limit`/`offset` since 2026-10-07 (API only — the UI still loads everything); `/salary` still returns everything (small today) |
 | KI-008 | Rule-based intent router misses some phrasings; month without year defaulted to 2024 | 🟡 | AI | Partly fixed 2026-10-06 — period resolution D-029; PRD §30 phrasings covered by `test_question_bank.py`; unusual wording can still miss (LLM-assisted fallback = P2) |
 | KI-009 | Scanned/image-only PDFs cannot be indexed (no OCR) | 🟡 | RAG | Open |
 | KI-010 | Lexical RAG: synonyms ("remote work" vs "work from home") may not match | 🟠 | RAG | Open |
@@ -29,10 +29,10 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-031 | Rate limits live in process memory: reset on restart, per uvicorn worker | 🟡 | Security | By design for one worker (D-031); multi-worker needs Redis or similar |
 | KI-032 | Approving a correction, declaring/removing a holiday does not regenerate payroll already generated for unpaid months | 🟡 | Payroll | By design — HR re-runs "Generate payroll" (D-033, D-034); paid months are locked |
 | KI-033 | Google sign-in auto-provisions any unknown Google account as an active `employee` (no domain allow-list, `email_verified` not checked) | 🟠 | Auth / Security | Open — needs an owner decision (allow-list domain? invite-only?) |
-| KI-034 | `app/api/users.py` queries the DB in route handlers instead of a service (AGENTS §2.1) | 🟡 | Architecture | Open |
-| KI-035 | Chat `confidence` stays `document_grounded` even when the LLM answers "I could not find this information…" | 🟡 | AI | Open — post-check the answer text |
+| KI-034 | `app/api/users.py` queries the DB in route handlers instead of a service (AGENTS §2.1) | 🟡 | Architecture | Fixed 2026-10-07 — `app/services/user_service.py` |
+| KI-035 | Chat `confidence` stays `document_grounded` even when the LLM answers "I could not find this information…" | 🟡 | AI | Fixed 2026-10-07 — `_confidence` post-checks the answer text → `not_found` |
 | KI-036 | `/chat` requests rejected with 400/422/429 are not written to `chat_logs` (PRD §28 logs interactions that reached the assistant) | 🟡 | AI / Logging | By design for now — note for audits |
-| KI-037 | `frontend/package.json` lists `axios`, which nothing imports | 🟡 | Dependencies | Open — remove on the next dependency change |
+| KI-037 | `frontend/package.json` lists `axios`, which nothing imports | 🟡 | Dependencies | Fixed 2026-10-07 — removed from `package.json` / `bun.lock` |
 
 ---
 

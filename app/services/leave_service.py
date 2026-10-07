@@ -316,8 +316,14 @@ def list_leaves(
     scope_ids: Optional[Set[int]] = None,
     status: Optional[str] = None,
     employee_id: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """Leave requests joined with employee info, newest first."""
+    limit: Optional[int] = None,
+    offset: int = 0,
+    with_total: bool = False,
+):
+    """Leave requests joined with employee info, newest first.
+
+    Returns the page as a list, or ``{"total", "items"}`` when ``with_total`` is set (pagination, D-035).
+    """
     query = db.query(Leave, Employee).join(Employee, Employee.id == Leave.employee_id)
     if scope_ids is not None:
         query = query.filter(Leave.employee_id.in_(scope_ids or {-1}))
@@ -325,9 +331,14 @@ def list_leaves(
         query = query.filter(Leave.status == status)
     if employee_id is not None:
         query = query.filter(Leave.employee_id == employee_id)
-    rows = query.order_by(Leave.applied_at.desc(), Leave.id.desc()).all()
+    query = query.order_by(Leave.applied_at.desc(), Leave.id.desc())
+    total = query.count() if with_total else 0
+    query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    rows = query.all()
     holidays = get_declared_holiday_dates(db)
-    return [
+    items = [
         {
             "id": lv.id,
             "employee_id": emp.id,
@@ -344,3 +355,4 @@ def list_leaves(
         }
         for lv, emp in rows
     ]
+    return {"total": total, "items": items} if with_total else items
