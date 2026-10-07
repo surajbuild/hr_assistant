@@ -3,7 +3,7 @@
 > Mark tasks `[x]` when done — never delete them. Add new tasks where they belong.
 > Priorities: **P0** blocker · **P1** critical (PRD acceptance) · **P2** important · **P3** nice-to-have.
 
-Last updated: 2026-10-06 (session 5 — security hardening, corrections, holidays, mark-paid, pagination, Docker, redesign Part 2)
+Last updated: 2026-10-07 (session 7 — cleanups: user service, confidence post-check, code-splitting, pagination, axios removal)
 
 ---
 
@@ -86,7 +86,7 @@ Dependencies:
 - [ ] Dedicated test database (`TEST_DATABASE_URL`) for crash-safety (KI-002 residual)
 - [ ] Synonym map or dense embeddings for RAG (KI-010)
 - [x] Use working days for leave length in the AI router too (KI-020) — and the LEAVE tool now includes the balance
-- [ ] Code-split the frontend bundle (KI-006); keyboard-accessible table rows (KI-018)
+- [x] Code-split the frontend bundle (KI-006, 2026-10-07, D-042); keyboard-accessible table rows (KI-018)
 - [x] Default the AI router's month-only questions to the latest year with data instead of 2024 (KI-008) — plus "this month" /
       "last month" (D-029, 2026-10-06)
 - [x] Team-scoped chat rankings for managers — owner said yes (2026-10-06, D-032)
@@ -103,7 +103,10 @@ Dependencies:
 - [x] Rate limiting on `/auth/login` and `/chat` (2026-10-06, D-031)
 - [x] Rotate to a ≥32-byte JWT secret; move SessionMiddleware secret fallback out of code — enforced at startup (2026-10-06, D-031)
 - [x] Architecture document + AI documentation + generated API reference (PRD §33) — `docs/` (2026-10-06)
-- [x] Deployment (Docker compose: MySQL + backend + frontend) — files + README; image build not yet run on a machine with Docker running (2026-10-06)
+- [x] Deployment (Docker compose: MySQL + backend + frontend) — files + README; stack built and verified healthy in session 6 (2026-10-06)
+- [x] Session-7 cleanups: `user_service` (KI-034), chat confidence post-check (KI-035), unused `axios` removed (KI-037),
+      `limit`/`offset` on `/users`, `/leaves`, `/documents` (KI-007) — 2026-10-07, D-042
+- [ ] Use the new `/leaves`, `/documents`, `/users` pagination in the UI tables (API-only so far)
 
 ## P3 — Nice-to-have (reference-site modules outside PRD scope)
 
