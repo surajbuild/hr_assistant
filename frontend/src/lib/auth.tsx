@@ -3,7 +3,8 @@
  *
  * - login(email, password) → POST /api/auth/login → stores `access_token` in localStorage (`hr_token`)
  * - logout() clears the token
- * - On load, a `#token=...` URL hash (future Google OAuth redirect) is stored and stripped.
+ * - On load, a `#token=...` URL hash (Google OAuth redirect) is stored and stripped; `#error=...` (failed Google
+ *   sign-in) is read by the login page via consumeHashError().
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, getToken, setToken as persistToken } from "./api";
@@ -38,6 +39,18 @@ function consumeHashToken() {
     persistToken(token);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }
+}
+
+/**
+ * A failed Google sign-in comes back as `/login#error=<reason>` (backend `_oauth_failure`, D-045).
+ * Returns the reason once and strips it from the URL.
+ */
+export function consumeHashError(): string | null {
+  const hash = window.location.hash;
+  if (!hash || !hash.includes("error=")) return null;
+  const message = new URLSearchParams(hash.replace(/^#/, "")).get("error");
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  return message ? message.slice(0, 300) : null;
 }
 
 /** Fallback when GET /auth/me is unavailable (404): derive a minimal user from the JWT payload. */

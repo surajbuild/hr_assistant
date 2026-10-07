@@ -2,6 +2,7 @@
  * Login: split screen — calm brand panel (desktop) + sign-in form.
  * Email/password (POST /auth/login via AuthProvider), Google (redirect flow), demo-account quick-fill chips.
  * Behaviour unchanged: generic backend error ("Invalid email or password."), network errors, redirect to /dashboard.
+ * A failed Google sign-in returns here as `#error=<reason>` (D-045) and is shown in the same alert.
  */
 import { useRef, useState, type FormEvent } from "react";
 import { AlertCircle, BarChart3, Bot, CalendarCheck, Eye, EyeOff, ShieldCheck } from "lucide-react";
@@ -12,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api";
-import { GOOGLE_LOGIN_URL, useAuth } from "@/lib/auth";
+import { consumeHashError, GOOGLE_LOGIN_URL, useAuth } from "@/lib/auth";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -48,7 +49,10 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    const googleError = consumeHashError();
+    return googleError ? `Google sign-in failed: ${googleError}` : "";
+  });
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const passwordRef = useRef<HTMLInputElement>(null);
 
