@@ -1,6 +1,23 @@
+"""
+app/main.py
+-----------
+FastAPI application: middleware, routers and health endpoints.
+
+    GET /              — legacy liveness message
+    GET /health        — liveness (the process answers)
+    GET /health/ready  — readiness: the database answers `SELECT 1` (200) or not (503); used by the Docker
+                         healthcheck so the frontend only starts once the API can serve data
+"""
+
+import logging
+
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.database.connection import engine
+from app.utils.logging import configure_logging
 from app.utils.security import load_secret
 
 from app.api.auth import router as auth_router
@@ -15,6 +32,9 @@ from app.api.departments import router as departments_router
 from app.api.documents import router as documents_router
 from app.api.users import router as users_router
 from app.api.holidays import router as holidays_router
+
+configure_logging()
+logger = logging.getLogger("app.main")
 
 app = FastAPI(
     title="AI HR Assistant",
@@ -45,3 +65,19 @@ app.include_router(holidays_router)
 @app.get("/", tags=["Health"])
 def root():
     return {"message": "AI HR Assistant is Running"}
+
+
+@app.get("/health", tags=["Health"], summary="Liveness")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["Health"], summary="Readiness (database reachable)")
+def health_ready():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("Readiness check failed: %s", type(exc).__name__)
+        return JSONResponse(status_code=503, content={"status": "unavailable", "database": "unreachable"})
+    return {"status": "ok", "database": "ok"}

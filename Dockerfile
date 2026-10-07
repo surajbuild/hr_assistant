@@ -49,8 +49,9 @@ USER app
 
 EXPOSE 8000
 
+# Readiness, not just liveness: healthy only while the API can reach MySQL (GET /health/ready → 503 otherwise).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/', timeout=4).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4).status == 200 else 1)"
 
 ENTRYPOINT ["/usr/local/bin/backend-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -11,9 +11,14 @@ Configuration via environment variables:
 - LLM_MODEL: Model name (default: "openai/gpt-4o-mini", the OpenRouter id).
 - LLM_BASE_URL: Provider base endpoint (default: "https://openrouter.ai/api/v1").
 - LLM_TIMEOUT: Request timeout in seconds (default: 30.0).
+- LLM_MAX_RETRIES: Extra attempts after a transient failure (default: 1). Only fast failures are retried —
+  connection errors and HTTP 429 / 502 / 503 / 504 — never a read timeout, so a slow provider cannot double
+  the user's wait.
+- LLM_RETRY_BACKOFF: Seconds to wait before a retry (default: 1.0).
 """
 
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -63,12 +68,48 @@ def get_llm_config() -> dict:
     if timeout_str is None:
         timeout_str = vals.get("LLM_TIMEOUT", "30.0")
 
+    retries_str = os.getenv("LLM_MAX_RETRIES")
+    if retries_str is None:
+        retries_str = vals.get("LLM_MAX_RETRIES", "1")
+
+    backoff_str = os.getenv("LLM_RETRY_BACKOFF")
+    if backoff_str is None:
+        backoff_str = vals.get("LLM_RETRY_BACKOFF", "1.0")
+
     return {
         "api_key": api_key.strip(),
         "model": model.strip(),
         "base_url": base_url.strip().rstrip("/"),
         "timeout": float(timeout_str),
+        "max_retries": max(0, int(retries_str)),
+        "retry_backoff": max(0.0, float(backoff_str)),
     }
+
+
+# Transient failures worth one more attempt: rate limited / gateway errors, and connections that never opened.
+_RETRY_STATUS = {429, 502, 503, 504}
+_RETRY_EXCEPTIONS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+
+
+def _post_with_retry(url: str, headers: dict, payload: dict, config: dict) -> dict:
+    attempts = config.get("max_retries", 0) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            with httpx.Client(timeout=config["timeout"]) as client:
+                resp = client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            if attempt < attempts and exc.response.status_code in _RETRY_STATUS:
+                time.sleep(config.get("retry_backoff", 0))
+                continue
+            raise
+        except _RETRY_EXCEPTIONS:
+            if attempt < attempts:
+                time.sleep(config.get("retry_backoff", 0))
+                continue
+            raise
+    raise LLMProviderError("LLM provider request was not attempted.")  # unreachable: attempts >= 1
 
 
 def generate_response(
@@ -76,7 +117,7 @@ def generate_response(
     system_prompt: Optional[str] = None,
     model: Optional[str] = None,
     temperature: float = 0.2,
-    max_tokens: int = 500,
+    max_tokens: int = 700,
 ) -> str:
     """
     Send prompt to the configured LLM provider and return generated text.
@@ -121,10 +162,7 @@ def generate_response(
     }
 
     try:
-        with httpx.Client(timeout=config["timeout"]) as client:
-            resp = client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = _post_with_retry(url, headers, payload, config)
 
         choices = data.get("choices")
         if not choices or not isinstance(choices, list):
