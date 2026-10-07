@@ -13,15 +13,21 @@ Detects basic intents:
 - UNKNOWN
 
 Fetches verified data directly via existing services:
-- app.services.employee_service   (profiles, directory, department headcount)
-- app.services.attendance_service (summaries, rankings: overtime / late / absent)
-- app.services.leave_service      (applications, balances)
-- app.services.salary_service     (payslips, payroll summary)
+- app.services.employee_service   (profiles incl. employee-ID lookup, directory, department headcount)
+- app.services.attendance_service (summaries, hours worked, attendance %, rankings, thresholds, department overtime)
+- app.services.leave_service      (applications, balances, leave taken in a period, who is on leave)
+- app.services.salary_service     (payslips incl. PF / overtime amount, payroll summary)
 - app/data/policies.json
 
 Time periods (resolve_period, D-029): "August 2024" is used as given; a month without a year means the
 most recent such month that has records; "this month" falls back to the latest month with data when
-the current month has none; "last month" is the previous calendar month.
+the current month has none; "last month" is the previous calendar month. resolve_date_range adds
+"today", "yesterday", "this week" and "last week".
+
+Targets (find_target_employee, D-043): a question is answered for a named employee, for the caller when
+they say "my"/"I", or for a group through a group tool. The caller's own record is never substituted for
+another person, an employee ID, a group, a department or the company; when the target is unclear the
+context asks for clarification (CLARIFICATION_PREFIX) and no records are loaded.
 
 Enforces RBAC and data isolation rules before passing context to the LLM.
 No arbitrary SQL is generated or executed by the LLM, and this module runs no queries of its own.
@@ -31,9 +37,9 @@ import calendar
 import json
 import os
 import re
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -125,7 +131,9 @@ def classify_intent(question: str) -> Intent:
         r"\bpayroll\b",
         r"\bcompensation\b",
         r"\bctc\b",
-        r"\bpf deduction",
+        r"\bpf\b",
+        r"\bprovident fund\b",
+        r"\b(overtime|ot) (amount|pay|payment|paid)\b",
         r"\bnet pay\b",
         r"\bgross pay\b",
         r"\bnet salary\b",
@@ -163,6 +171,7 @@ def classify_intent(question: str) -> Intent:
         r"\bworking minutes\b",
         r"\bhours worked\b",
         r"\bworked hours\b",
+        r"\bhours\b.{0,30}\bwork(ed)?\b",
         r"\bdays present\b",
         r"\bdays absent\b",
         r"\bhow many days was .* present\b",
@@ -258,6 +267,30 @@ MONTH_NAMES = {
 _SELF_RX = re.compile(r"\b(my|mine|me|i|myself)\b")
 _THIS_MONTH_RX = re.compile(r"\b(this|current) month\b")
 _LAST_MONTH_RX = re.compile(r"\b(last|previous|past) month\b")
+_THIS_WEEK_RX = re.compile(r"\b(this|current) week\b")
+_LAST_WEEK_RX = re.compile(r"\b(last|previous|past) week\b")
+_TODAY_RX = re.compile(r"\btoday\b")
+_YESTERDAY_RX = re.compile(r"\byesterday\b")
+
+# Context that asks the user to name a person / rephrase instead of answering (chat confidence
+# "clarification_needed"). No HR figures are ever put in such a context.
+CLARIFICATION_PREFIX = "Clarification needed:"
+
+# A question about several people (a team, a department, the company) — never answered with the caller's
+# own record (D-043). Department names are matched separately (they come from the data).
+_GROUP_RX = re.compile(
+    r"\bteams?\b|\bmembers\b|\b(direct )?reports\b|\bsubordinates\b|\bemployees\b|\bstaff\b|\bpeople\b"
+    r"|\beveryone\b|\beverybody\b|\bcompany(-wide)?\b|\borgani[sz]ation\b|\bdepartments\b"
+    r"|\bdepartment-?wise\b|\b(by|per|each|every) department\b"
+)
+# Words that make a question without a named person an aggregate or "who" question — then it is not
+# read as "about the caller", even for the employee role.
+_AGGREGATE_RX = re.compile(
+    r"\b(total|average|avg|overall|highest|lowest|maximum|minimum|most|least|who|whom|whose|which|anyone|anybody)\b"
+)
+_TEAM_RX = re.compile(r"\b(my|our) (own )?team\b|\bmembers of my\b|\bmy (direct )?reports\b|\bmy subordinates\b")
+# "employee 1025", "employee ID 4", "emp #12" — the number is the employee code's number (EMP004 = 4)
+_EMPLOYEE_ID_RX = re.compile(r"\b(?:employee|emp)\s*(?:id|code|no\.?|number)?\s*#?\s*(\d{1,6})\b")
 
 # "another employee's salary", "someone else's leave" — another person, but nobody named
 _UNNAMED_OTHER_RX = re.compile(
@@ -321,7 +354,7 @@ def resolve_period(
 
     Returns (month, year, note). `note` is a sentence for the LLM context when an assumption was
     made, so the answer can say which period it describes. `source` selects which data defines
-    "has records": "attendance" (attendance table) or "salary" (payroll rows).
+    "has records": "attendance" (attendance table), "salary" (payroll rows) or "leave" (none — the calendar).
     """
     today = today or date.today()
     current = (today.year, today.month)
@@ -330,9 +363,12 @@ def resolve_period(
         return month, year, None
 
     q_lower = question.lower()
-    periods = (
-        salary_service.get_payroll_periods(db) if source == "salary" else attendance_service.get_months_with_data(db)
-    )
+    if source == "salary":
+        periods = salary_service.get_payroll_periods(db)
+    elif source == "leave":
+        periods = []  # leave questions use the calendar ("this month" = the current month)
+    else:
+        periods = attendance_service.get_months_with_data(db)
     past_periods = [p for p in periods if p <= current]
 
     if month:
@@ -362,93 +398,187 @@ def resolve_period(
     return None, None, None
 
 
+def resolve_date_range(
+    db: Session,
+    question: str,
+    source: str = "attendance",
+    today: Optional[date] = None,
+) -> Tuple[Optional[date], Optional[date], str, Optional[str]]:
+    """
+    (start, end, label, note) for a question: "today" / "yesterday" / "this week" (Monday → today) /
+    "last week" (the previous Monday → Sunday) first, otherwise the month/year period of resolve_period().
+    (None, None, "all recorded dates", None) when the question names no period.
+    """
+    today = today or date.today()
+    q_lower = question.lower()
+    monday = today - timedelta(days=today.weekday())
+    if _LAST_WEEK_RX.search(q_lower):
+        start, end = monday - timedelta(days=7), monday - timedelta(days=1)
+        return start, end, f"last week ({start} to {end})", None
+    if _THIS_WEEK_RX.search(q_lower):
+        return monday, today, f"this week ({monday} to {today})", None
+    if _YESTERDAY_RX.search(q_lower):
+        day = today - timedelta(days=1)
+        return day, day, f"yesterday ({day})", None
+    if _TODAY_RX.search(q_lower):
+        return today, today, f"today ({today})", None
+    month, year, note = resolve_period(db, question, source=source, today=today)
+    start, end = _period_bounds(month, year)
+    return start, end, _period_label(month, year), note
+
+
 def refers_to_unnamed_other(question: str) -> bool:
     """True for "another employee's salary"-style questions that point at someone without naming them."""
     return bool(_UNNAMED_OTHER_RX.search(question.lower()))
 
 
-def find_target_employee(db: Session, question: str, current_user: User) -> Tuple[Optional[Employee], bool]:
-    """
-    Determine the target employee from the query.
+def named_departments(db: Session, question: str) -> List[str]:
+    """Department names (from the employee data, D-005) written in the question."""
+    q_lower = question.lower()
+    return [d["name"] for d in employee_service.list_departments(db) if d["name"].lower() in q_lower]
 
-    Returns:
-        (target_employee, is_explicitly_other_employee)
-        (None, True) means "someone other than the caller who is not in the database / not named".
+
+def refers_to_group(db: Session, question: str) -> bool:
+    """True when the question is about a team, a department, several employees or the whole company."""
+    return bool(_GROUP_RX.search(question.lower())) or bool(named_departments(db, question))
+
+
+def find_named_employee(db: Session, question: str) -> Tuple[Optional[Employee], bool]:
+    """
+    The employee a question names by code ("EMP004"), employee ID ("employee 4") or name ("Aman", "Aman Gupta").
+
+    Returns (employee, named): (None, True) when a code / ID was given that matches nobody.
     """
     q_lower = question.lower()
-
-    # Check for self-referential terms
-    is_self = bool(_SELF_RX.search(q_lower))
-
-    # Search for known employees by code or name
-    explicit_match = None
-    for emp in employee_service.get_all_employees(db):
-        # Check employee code (e.g. EMP004)
+    employees = employee_service.get_all_employees(db)
+    for emp in employees:
         if emp.employee_code.lower() in q_lower:
-            explicit_match = emp
-            break
-        # Check first name or full name (e.g. "Aman", "Aman Gupta", "Rahul", "Neha")
+            return emp, True
+
+    id_match = _EMPLOYEE_ID_RX.search(q_lower)
+    if id_match:
+        number = int(id_match.group(1))
+        for emp in employees:
+            digits = re.sub(r"\D", "", emp.employee_code)
+            if digits and int(digits) == number:
+                return emp, True
+        return None, True
+
+    for emp in employees:
         first_name = emp.name.split()[0].lower()
         if re.search(r"\b" + re.escape(first_name) + r"\b", q_lower) or emp.name.lower() in q_lower:
-            explicit_match = emp
-            break
+            return emp, True
+    return None, False
 
-    if explicit_match:
-        is_other = explicit_match.id != current_user.employee_id
-        return explicit_match, is_other
 
-    # "another employee", "a colleague" — someone else, but nobody named
-    if refers_to_unnamed_other(question):
-        return None, True
+# Third person who is not in the database, e.g. "of John Unknown", "was Bruce Wayne present" (names are capitalised)
+_UNKNOWN_PERSON_RX = re.compile(
+    r"\b(?i:of|for|about|who is|was|regarding|does)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)"
+)
+_UNKNOWN_PERSON_STOPWORDS = {
+    "the", "a", "an", "my", "our", "all", "each", "this", "that", "company", "office", "any", "your", "latest",
+    "standard", "designation", "department", "salary", "attendance", "leave", "overtime", "late", "most",
+    "last", "previous", "current", "next", "today", "yesterday", "week", "month", "year", "me", "us",
+    "everyone", "everybody", "employees", "employee", "present", "absent", "i", "it", "there",
+} | set(MONTH_NAMES)
 
-    # An employee code that matched nobody (e.g. "EMP999")
-    if re.search(r"\bemp\d+\b", q_lower):
-        return None, True
 
-    if is_self:
-        return current_user.employee, False
+def find_target_employee(
+    db: Session, question: str, current_user: User
+) -> Tuple[Optional[Employee], bool, Optional[str]]:
+    """
+    The one employee a question is about.
 
-    # Check if question refers to a third person that does not exist in company DB
-    # e.g., "of John Unknown", "was Bob present", "for Alice"
-    stopwords = {
-        "the", "a", "an", "my", "our", "all", "each", "this", "that", "company", "office", "any", "your", "latest",
-        "standard", "designation", "department", "salary", "attendance", "leave", "overtime", "late", "most",
-        "last", "previous", "current", "next", "today", "yesterday", "week", "month", "year", "me", "us",
-        "everyone", "everybody", "employees", "employee", "present", "absent",
-    } | set(MONTH_NAMES)
-    for m in re.finditer(r"\b(?:of|for|about|who is|was|regarding|does)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", question, re.IGNORECASE):
-        candidate = m.group(1).strip().lower()
-        candidate_words = set(candidate.split())
-        if not candidate_words.intersection(stopwords):
-            return None, True
+    Returns (target_employee, is_other, note):
+      - a named employee (code, employee ID or name)        → (employee, employee is not the caller, None)
+      - a code / ID / name that matches nobody, or an unnamed
+        "another employee" / "a colleague"                  → (None, True, None)
+      - a group, team, department or company question        → (None, False, None)
+      - "my", "I", "me"                                      → (caller, False, None)
+      - nobody named and no self reference: an *employee* can only see their own records, so a plain
+        question ("How much PF was deducted?") is about them — returned with a note the answer must state.
+        For other roles (and for aggregate / "who" wording) the target is unknown → (None, False, None).
+    The caller's own record is never used for a question about someone else or about a group (D-043).
+    """
+    named, asked = find_named_employee(db, question)
+    if named:
+        return named, named.id != current_user.employee_id, None
+    if asked or refers_to_unnamed_other(question):
+        return None, True, None
+    if refers_to_group(db, question):
+        return None, False, None
 
-    # Fallback to current user if asking generally about records without naming someone
-    return current_user.employee, False
+    q_lower = question.lower()
+    if _SELF_RX.search(q_lower):
+        return current_user.employee, False, None
+
+    for m in _UNKNOWN_PERSON_RX.finditer(question):
+        if not set(m.group(1).lower().split()) & _UNKNOWN_PERSON_STOPWORDS:
+            return None, True, None
+
+    own = current_user.employee
+    if current_user.role == UserRole.EMPLOYEE.value and own and not _AGGREGATE_RX.search(q_lower):
+        note = (
+            f"Note: no person was named, so these are the records of the user themself, {own.name} "
+            f"({own.employee_code}) — the only employee whose records this user can see. Say so in the answer."
+        )
+        return own, False, note
+    return None, False, None
+
+
+_GROUP_HELP = (
+    "Group questions the HR assistant can answer: rankings (\"Who worked the most overtime this month?\"), "
+    "thresholds (\"Show employees with more than 5 late entries\", \"How many employees worked more than "
+    "10 hours overtime?\"), \"Which members of my team worked overtime last week?\", department-wise overtime, "
+    "department headcount, who is on leave today, and (HR/Admin) the company payroll summary."
+)
 
 
 def _missing_target_response(
+    db: Session,
     current_user: User,
     intent: Intent,
     question: str,
     data_source: str,
+    is_other: bool,
 ) -> Tuple[str, str, Optional[str]]:
     """
-    Context when find_target_employee() found nobody. An unnamed "another employee" is refused for
-    roles that may not see other people's data of this kind; otherwise the user is asked to name them.
+    Context when find_target_employee() found nobody. No record is loaded for anyone:
+      - an unnamed "another employee" or a group question is refused for roles that may not see other
+        people's data of this kind (D-030); otherwise the user is asked to name the person / rephrase;
+      - a name / code / employee ID that matches nobody → "No employee record found";
+      - nobody named at all → the user is asked whose records they mean (never the caller's by default).
     """
-    if not refers_to_unnamed_other(question):
-        return "No employee record found for the requested name.", data_source, None
+    unnamed_other = refers_to_unnamed_other(question)
+    group = not is_other and refers_to_group(db, question)
+    if is_other and not unnamed_other:
+        return "No employee record found for the requested name or employee ID.", data_source, None
 
-    company_wide = current_user.role in COMPANY_WIDE_ROLES
-    if (intent == Intent.SALARY and not company_wide) or (
-        intent in (Intent.ATTENDANCE, Intent.LEAVE) and current_user.role == UserRole.EMPLOYEE.value
-    ):
-        # target -1 never matches the caller or a subordinate, so the standard denial is returned
-        _, denial = check_rbac_access(current_user, intent.value, target_employee_id=-1)
-        return denial, data_source, denial
+    if unnamed_other or group:
+        company_wide = current_user.role in COMPANY_WIDE_ROLES
+        if (intent == Intent.SALARY and not company_wide) or (
+            intent in (Intent.ATTENDANCE, Intent.LEAVE, Intent.EMPLOYEE)
+            and current_user.role == UserRole.EMPLOYEE.value
+        ):
+            # target -1 never matches the caller or a subordinate, so the standard denial is returned
+            _, denial = check_rbac_access(current_user, intent.value, target_employee_id=-1)
+            return denial, data_source, denial
+
+    if unnamed_other:
+        return (
+            f"{CLARIFICATION_PREFIX} No specific employee was named in the question. Ask the user which employee "
+            "they mean (name or employee code) instead of guessing. Do not give any figures."
+        ), data_source, None
+    if group:
+        return (
+            f"{CLARIFICATION_PREFIX} The question is about a group of employees (a team, a department or the "
+            "whole company) in a form the HR system cannot answer, so no records were retrieved. Tell the user "
+            f"this without giving any figures and suggest a supported question. {_GROUP_HELP}"
+        ), data_source, None
     return (
-        "No specific employee was named in the question. Ask the user which employee they mean "
-        "(name or employee code) instead of guessing."
+        f"{CLARIFICATION_PREFIX} The question does not say whose records it is about, so no records were "
+        "retrieved. Ask the user to name the employee (name or employee code), to say \"my\" for their own "
+        "records, or to ask a company-level question. Do not give any figures."
     ), data_source, None
 
 
@@ -491,6 +621,20 @@ def _days(count: int) -> str:
     return f"{count} day" if count == 1 else f"{count} days"
 
 
+def _group_scope(db: Session, current_user: User, question: str) -> Tuple[Optional[Set[int]], str]:
+    """
+    Employee ids a group attendance question covers, and how to describe that scope.
+    "my team" → the caller + direct reports (any role); otherwise HR/Admin → company-wide (None),
+    manager → themself + direct reports (D-032, same scope as GET /attendance/records).
+    """
+    team_text = "limited to you and your direct reports"
+    if _TEAM_RX.search(question.lower()) and current_user.employee:
+        own = current_user.employee
+        return {own.id} | {sub.id for sub in own.subordinates}, team_text
+    scope_ids = employee_service.get_scope_employee_ids(db, current_user)
+    return scope_ids, ("company-wide" if scope_ids is None else team_text)
+
+
 def _ranking_context(
     db: Session,
     current_user: User,
@@ -509,11 +653,8 @@ def _ranking_context(
         )
         return denial, "attendance_database", denial
 
-    scope_ids = employee_service.get_scope_employee_ids(db, current_user)
-    scope_text = "company-wide" if scope_ids is None else "limited to you and your direct reports"
-    month, year, note = resolve_period(db, question)
-    start_d, end_d = _period_bounds(month, year)
-    period = _period_label(month, year)
+    scope_ids, scope_text = _group_scope(db, current_user, question)
+    start_d, end_d, period, note = resolve_date_range(db, question)
     ranked = attendance_service.rank_employees(
         db, metric, start_date=start_d, end_date=end_d, scope_ids=scope_ids, limit=5
     )
@@ -538,6 +679,193 @@ def _ranking_context(
     if note:
         lines.append(note)
     return "\n".join(lines), "attendance_database", None
+
+
+_METRIC_RX = {
+    "overtime": re.compile(r"\bovertime\b|\bot hours\b|\bextra hours\b"),
+    "late": re.compile(r"\blate\b|\blatecomers?\b|\blateness\b"),
+    "absent": re.compile(r"\babsent\b|\babsences?\b"),
+}
+# "more than 5", "over 10 hours", "at least 3 times" — strict unless "at least" / "or more" / ">="
+_THRESHOLD_RX = re.compile(
+    r"\b(more than|over|above|greater than|exceeding|at least|minimum of)\s+(\d+(?:\.\d+)?)\s*"
+    r"(hours?|hrs?|minutes?|mins?)?"
+    r"|(>=|>)\s*(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?)?"
+    r"|\b(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?|times|days|late entries)?\s+or more\b"
+)
+_WHO_RX = re.compile(r"\b(who|whom|which|how many)\b")
+_DEPARTMENT_WISE_RX = re.compile(
+    r"\bdepartment-?\s?wise\b|\b(by|per|each|every|across) departments?\b|\bdepartment (breakdown|split|totals?)\b"
+)
+
+
+def _attendance_metric(question: str) -> Optional[str]:
+    q_lower = question.lower()
+    for metric, rx in _METRIC_RX.items():
+        if rx.search(q_lower):
+            return metric
+    return None
+
+
+def _parse_threshold(question: str) -> Optional[Tuple[float, bool, Optional[str]]]:
+    """(value, inclusive, unit) for "more than 10 hours", "at least 3 times", "5 or more"; None when absent."""
+    m = _THRESHOLD_RX.search(question.lower())
+    if not m:
+        return None
+    if m.group(2):
+        return float(m.group(2)), m.group(1) in ("at least", "minimum of"), m.group(3)
+    if m.group(5):
+        return float(m.group(5)), m.group(4) == ">=", m.group(6)
+    return float(m.group(7)), True, m.group(8)
+
+
+def _number(value: float) -> str:
+    return str(int(value)) if value == int(value) else str(value)
+
+
+def _group_denial(kind: str) -> Tuple[str, str, Optional[str]]:
+    denial = (
+        f"Access denied: {kind} for other employees are restricted to HR, Administrators and managers "
+        "(for their own team)."
+    )
+    return denial, "attendance_database", denial
+
+
+def _attendance_group_context(
+    db: Session,
+    current_user: User,
+    question: str,
+) -> Optional[Tuple[str, str, Optional[str]]]:
+    """
+    Attendance questions about several employees (no one named), or None when the question is not one:
+      - department-wise overtime                                 → attendance_service.get_overtime_by_department
+      - "employees with more than 5 late entries", "more than 10 hours overtime",
+        "which members of my team worked overtime last week"     → attendance_service.rank_employees(limit=None)
+    Same roles and scope as the rankings (D-032): HR/Admin company-wide, managers their team, employees refused.
+    """
+    q_lower = question.lower()
+    metric = _attendance_metric(question)
+    if not metric:
+        return None
+    departments = named_departments(db, question)
+    group = refers_to_group(db, question)
+    threshold = _parse_threshold(question)
+    department_wise = metric == "overtime" and bool(_DEPARTMENT_WISE_RX.search(q_lower))
+    who_without_self = bool(_WHO_RX.search(q_lower)) and not _SELF_RX.search(q_lower)
+    if not (department_wise or group or who_without_self):
+        return None
+
+    if current_user.role not in COMPANY_WIDE_ROLES and current_user.role != UserRole.MANAGER.value:
+        return _group_denial("Attendance figures")
+
+    scope_ids, scope_text = _group_scope(db, current_user, question)
+    start_d, end_d, period, note = resolve_date_range(db, question)
+
+    if department_wise:
+        rows = attendance_service.get_overtime_by_department(db, start_date=start_d, end_date=end_d, scope_ids=scope_ids)
+        if departments:
+            rows = [r for r in rows if r["department"] in departments]
+        if not rows:
+            context = f"No attendance records found for {period} ({scope_text})."
+            return (f"{context}\n{note}" if note else context), "attendance_database", None
+        lines = [f"Overtime by department for {period}, {scope_text} (calculated by the HR system):"]
+        for r in rows:
+            lines.append(
+                f"- {r['department']}: total overtime {_format_minutes(r['total_overtime_minutes'])}; "
+                f"{r['employees_with_overtime']} of {r['employees_with_records']} employees with attendance "
+                "records worked overtime"
+            )
+        total = sum(r["total_overtime_minutes"] for r in rows)
+        lines.append(f"Total across these departments: {_format_minutes(total)}.")
+        if note:
+            lines.append(note)
+        return "\n".join(lines), "attendance_database", None
+
+    items = attendance_service.rank_employees(
+        db, metric, start_date=start_d, end_date=end_d, scope_ids=scope_ids, limit=None
+    )
+    if departments:
+        items = [i for i in items if i["department"] in departments]
+        scope_text += f", department {', '.join(departments)}"
+
+    if threshold:
+        value, inclusive, unit = threshold
+        compare = "at least" if inclusive else "more than"
+        if metric == "overtime":
+            minutes = value if unit and unit.startswith("min") else value * 60
+            unit_text = "minutes" if unit and unit.startswith("min") else "hours"
+            items = [i for i in items if i["overtime_minutes"] >= minutes] if inclusive else \
+                [i for i in items if i["overtime_minutes"] > minutes]
+            description = f"{compare} {_number(value)} {unit_text} of overtime"
+        else:
+            count_key = "late_days" if metric == "late" else "absent_days"
+            items = [i for i in items if i[count_key] >= value] if inclusive else \
+                [i for i in items if i[count_key] > value]
+            description = f"{compare} {_number(value)} " + ("late entries" if metric == "late" else "absences")
+    else:
+        description = {"overtime": "any overtime", "late": "any late entries", "absent": "any absences"}[metric]
+
+    if not items:
+        context = f"No employees had {description} for {period} ({scope_text}). Checked by the HR system."
+        return (f"{context}\n{note}" if note else context), "attendance_database", None
+
+    count = len(items)
+    lines = [
+        f"Employees with {description} for {period}, {scope_text} (calculated by the HR system): "
+        f"{count} employee{'s' if count != 1 else ''}."
+    ]
+    for item in items:
+        who = f"{item['employee_name']} ({item['employee_code']}, {item['department']})"
+        if metric == "overtime":
+            detail = f"total overtime {_format_minutes(item['overtime_minutes'])}"
+        elif metric == "late":
+            detail = f"{_days(item['late_days'])} late ({item['late_minutes']} late minutes in total)"
+        else:
+            detail = f"{_days(item['absent_days'])} absent"
+        lines.append(f"- {who}: {detail}")
+    if note:
+        lines.append(note)
+    return "\n".join(lines), "attendance_database", None
+
+
+_ON_LEAVE_RX = re.compile(r"\bon leave\b|\bon (a )?(sick|casual|earned) leave\b")
+
+
+def _on_leave_context(db: Session, current_user: User, question: str) -> Tuple[str, str, Optional[str]]:
+    """Who is on approved leave today / yesterday / tomorrow — HR/Admin company-wide, managers their team."""
+    if current_user.role not in COMPANY_WIDE_ROLES and current_user.role != UserRole.MANAGER.value:
+        denial = "Access denied: Leave records of other employees are restricted to HR, Administrators and managers."
+        return denial, "leave_database", denial
+
+    q_lower = question.lower()
+    today = date.today()
+    if "tomorrow" in q_lower:
+        on_date, label = today + timedelta(days=1), "tomorrow"
+    elif _YESTERDAY_RX.search(q_lower):
+        on_date, label = today - timedelta(days=1), "yesterday"
+    else:
+        on_date, label = today, "today"
+    scope_ids, scope_text = _group_scope(db, current_user, question)
+    on_leave = leave_service.get_employees_on_leave(db, on_date, scope_ids=scope_ids)
+    departments = named_departments(db, question)
+    if departments:
+        on_leave = [r for r in on_leave if r["department"] in departments]
+        scope_text += f", department {', '.join(departments)}"
+
+    if not on_leave:
+        return (
+            f"No employees are on approved leave {label} ({on_date}, {scope_text}). Checked by the HR system."
+        ), "leave_database", None
+    lines = [
+        f"Employees on approved leave {label} ({on_date}), {scope_text} (from the HR system): "
+        f"{len(on_leave)} employee{'s' if len(on_leave) != 1 else ''}."
+    ]
+    for r in on_leave:
+        lines.append(
+            f"- {r['employee_name']} ({r['employee_code']}, {r['department']}): {r['leave_type']} leave "
+            f"from {r['from_date']} to {r['to_date']}"
+        )
+    return "\n".join(lines), "leave_database", None
 
 
 _HEADCOUNT_RX = re.compile(
@@ -636,9 +964,10 @@ def retrieve_policy_context(
 
 
 _COMPANY_SALARY_RX = re.compile(
-    r"\btotal (salary|salaries|payroll|net pay)\b|\bcompany(-wide)? (salary|salaries|payroll)\b"
+    r"\btotal (salary|salaries|payroll|net pay)\b|\bcompany(-wide)? (salary|salaries|payroll|pf|overtime)\b"
     r"|\bpayroll (summary|total|cost)\b|\ball (the )?(employees'? )?salar(y|ies)\b"
     r"|\bsalar(y|ies) of (all|every)|\bevery(one|body)'?s? salar|\ball employees'? salar"
+    r"|\btotal (pf|provident fund|deductions|(overtime|ot) (amount|pay|payment|paid))\b"
 )
 
 
@@ -692,13 +1021,15 @@ def retrieve_hr_context(
     if intent == Intent.SALARY:
         month, year, note = resolve_period(db, question, source="salary")
 
-        # Company-wide payroll inquiry ("total payroll", "show all salaries", "payroll for 2024" with nobody
-        # named) → summary only, never a per-person salary table (AGENTS.md §3.6)
+        # Company-wide payroll inquiry ("total payroll", "show all salaries", "total overtime amount",
+        # "payroll for 2024" with nobody named) → summary only, never a per-person salary table (AGENTS.md §3.6).
+        # Not for one department: there is no department payroll summary, so that is a group question below.
         q_lower = question.lower()
-        target_emp, is_other = find_target_employee(db, question, current_user)
-        is_company_query = bool(_COMPANY_SALARY_RX.search(q_lower)) or (
-            bool(re.search(r"\bpayroll\b", q_lower)) and target_emp is not None and not is_other
-            and not _SELF_RX.search(q_lower)
+        target_emp, is_other, target_note = find_target_employee(db, question, current_user)
+        nobody_named = (target_emp is None or target_note is not None) and not is_other
+        is_company_query = not named_departments(db, question) and (
+            bool(_COMPANY_SALARY_RX.search(q_lower) and not (target_emp and not target_note))
+            or (bool(re.search(r"\bpayroll\b", q_lower)) and nobody_named and not _SELF_RX.search(q_lower))
         )
         if is_company_query:
             if current_user.role not in COMPANY_WIDE_ROLES:
@@ -728,7 +1059,7 @@ def retrieve_hr_context(
 
         # Individual employee salary inquiry
         if not target_emp:
-            return _missing_target_response(current_user, intent, question, "salary_database")
+            return _missing_target_response(db, current_user, intent, question, "salary_database", is_other)
 
         # RBAC Check: Employees/Managers cannot view other employees' salary
         allowed, denial_reason = check_rbac_access(current_user, "SALARY", target_employee_id=target_emp.id)
@@ -752,8 +1083,18 @@ def retrieve_hr_context(
                 f"Deductions: ₹{s.deductions:,.2f} | Overtime Amount: ₹{s.overtime_amount:,.2f} | "
                 f"Net Salary: ₹{s.net_salary:,.2f}"
             )
+        if len(salaries) > 1:
+            # Sums are calculated here, never by the LLM (PRD §20)
+            lines.append(
+                f"Totals for the {len(salaries)} periods listed: Gross ₹{sum(s.gross_salary for s in salaries):,.2f} | "
+                f"PF ₹{sum(s.pf for s in salaries):,.2f} | Deductions ₹{sum(s.deductions for s in salaries):,.2f} | "
+                f"Overtime Amount ₹{sum(s.overtime_amount for s in salaries):,.2f} | "
+                f"Net ₹{sum(s.net_salary for s in salaries):,.2f}"
+            )
         if note:
             lines.append(note)
+        if target_note:
+            lines.append(target_note)
         return "\n".join(lines), "salary_database", None
 
     # -----------------------------------------------------------------------
@@ -765,19 +1106,26 @@ def retrieve_hr_context(
         if metric:
             return _ranking_context(db, current_user, metric, question)
 
+        # Several employees: thresholds, "who worked overtime", department-wise overtime (nobody named)
+        named, asked = find_named_employee(db, question)
+        if not named and not asked and not refers_to_unnamed_other(question):
+            group_context = _attendance_group_context(db, current_user, question)
+            if group_context:
+                return group_context
+
         # Individual attendance inquiry
-        target_emp, is_other = find_target_employee(db, question, current_user)
+        target_emp, is_other, target_note = find_target_employee(db, question, current_user)
         if not target_emp:
-            return _missing_target_response(current_user, intent, question, "attendance_database")
+            return _missing_target_response(db, current_user, intent, question, "attendance_database", is_other)
 
         # RBAC Check: Employees cannot view other employees' attendance
         allowed, denial_reason = check_rbac_access(current_user, "ATTENDANCE", target_employee_id=target_emp.id)
         if not allowed:
             return denial_reason, "attendance_database", denial_reason
 
-        month, year, note = resolve_period(db, question)
-        start_d, end_d = _period_bounds(month, year)
-        period_str = _period_label(month, year)
+        start_d, end_d, period_str, note = resolve_date_range(db, question)
+        if target_note:
+            note = f"{note}\n{target_note}" if note else target_note
         summary = attendance_service.get_attendance_summary(
             db, employee_id=target_emp.id, start_date=start_d, end_date=end_d
         )
@@ -789,6 +1137,13 @@ def retrieve_hr_context(
             )
             return (f"{context}\n{note}" if note else context), "attendance_database", None
 
+        pct = attendance_service.attendance_percentage(summary)
+        pct_text = (
+            f"{pct['percentage']}% ({_number(pct['attended_days'])} of {pct['working_days']} recorded working days "
+            "attended; present days count 1 and half days 0.5; absences and leave count as not attended; "
+            "weekends and holidays are excluded)"
+            if pct["percentage"] is not None else "not available (no recorded working days)"
+        )
         context = (
             f"Attendance summary for {target_emp.name} ({target_emp.employee_code}) for {period_str}:\n"
             f"- Total Days Recorded: {summary['total_days']}\n"
@@ -799,7 +1154,10 @@ def retrieve_hr_context(
             f"- Late Clock-Ins: {summary['late_days']} (late entries after 09:15 AM)\n"
             f"- Overtime Days: {summary['overtime_days']}\n"
             f"- Total Overtime: {_format_minutes(summary['total_overtime_minutes'])}\n"
-            f"- Total Working Minutes: {summary['total_working_minutes']}"
+            f"- Total Working Minutes: {summary['total_working_minutes']}\n"
+            f"- Total Hours Worked: {summary['total_working_minutes'] // 60} hours "
+            f"{summary['total_working_minutes'] % 60} minutes\n"
+            f"- Attendance Percentage: {pct_text}"
         )
         if note:
             context += f"\n{note}"
@@ -809,9 +1167,19 @@ def retrieve_hr_context(
     # 4. LEAVE INTENT
     # -----------------------------------------------------------------------
     if intent == Intent.LEAVE:
-        target_emp, is_other = find_target_employee(db, question, current_user)
+        # "How many employees are on leave today?", "Who on my team is on leave?" (nobody named)
+        q_lower = question.lower()
+        named, asked = find_named_employee(db, question)
+        if (
+            _ON_LEAVE_RX.search(q_lower) and not named and not asked
+            and (refers_to_group(db, question) or (_WHO_RX.search(q_lower) and not _SELF_RX.search(q_lower))
+                 or re.search(r"\b(anyone|anybody|someone|somebody)\b", q_lower))
+        ):
+            return _on_leave_context(db, current_user, question)
+
+        target_emp, is_other, target_note = find_target_employee(db, question, current_user)
         if not target_emp:
-            return _missing_target_response(current_user, intent, question, "leave_database")
+            return _missing_target_response(db, current_user, intent, question, "leave_database", is_other)
 
         # RBAC Check: Employees cannot view other employees' leave applications
         allowed, denial_reason = check_rbac_access(current_user, "LEAVE", target_employee_id=target_emp.id)
@@ -832,6 +1200,19 @@ def retrieve_hr_context(
                 f"- {b['leave_type'].title()} leave: entitled {b['entitled']}, used {b['used']}, "
                 f"pending approval {b['pending']}, remaining {b['remaining']}"
             )
+
+        # "How many leaves did I take this month / last week?" — leave days inside that period (by the calendar)
+        start_d, end_d, period_str, _ = resolve_date_range(db, question, source="leave")
+        if start_d and end_d:
+            taken = leave_service.get_leave_days_in_range(db, target_emp.id, start_d, end_d)
+            lines.append(
+                f"\nLeave taken in {period_str} (working days, calculated by the HR system): "
+                f"approved {sum(t['approved'] for t in taken)} in total ("
+                + ", ".join(f"{t['leave_type']} {t['approved']}" for t in taken)
+                + f"); pending approval {sum(t['pending'] for t in taken)}."
+            )
+        if target_note:
+            lines.append(target_note)
 
         leaves = leave_service.get_leaves_for_employee(db, employee_id=target_emp.id)
         if not leaves:
@@ -870,11 +1251,13 @@ def retrieve_hr_context(
                 lines.append(f"- {e.employee_code}: {e.name} | Dept: {e.department} | Role: {e.designation}")
             return "\n".join(lines), "employee_database", None
 
-        target_emp, is_other = find_target_employee(db, question, current_user)
+        target_emp, is_other, target_note = find_target_employee(db, question, current_user)
         if not target_emp:
-            context, source, denial = _missing_target_response(current_user, intent, question, "employee_database")
+            context, source, denial = _missing_target_response(
+                db, current_user, intent, question, "employee_database", is_other
+            )
             if context.startswith("No employee record found"):
-                context = "No employee record found matching the inquiry."
+                context = "No employee record found matching the inquiry (name, employee code or employee ID)."
             return context, source, denial
 
         # Another person's profile: same scope as GET /employees/{id} (D-039) — refused before the LLM
@@ -893,6 +1276,8 @@ def retrieve_hr_context(
             f"- Status: {target_emp.status}\n"
             f"- Reporting Manager: {manager_name}"
         )
+        if target_note:
+            context += f"\n{target_note}"
         return context, "employee_database", None
 
     # -----------------------------------------------------------------------

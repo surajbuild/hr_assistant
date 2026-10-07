@@ -31,8 +31,11 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | KI-033 | Google sign-in auto-provisions any unknown Google account as an active `employee` (no domain allow-list, `email_verified` not checked) | 🟠 | Auth / Security | Open — needs an owner decision (allow-list domain? invite-only?) |
 | KI-034 | `app/api/users.py` queries the DB in route handlers instead of a service (AGENTS §2.1) | 🟡 | Architecture | Fixed 2026-10-07 — `app/services/user_service.py` |
 | KI-035 | Chat `confidence` stays `document_grounded` even when the LLM answers "I could not find this information…" | 🟡 | AI | Fixed 2026-10-07 — `_confidence` post-checks the answer text → `not_found` |
-| KI-036 | `/chat` requests rejected with 400/422/429 are not written to `chat_logs` (PRD §28 logs interactions that reached the assistant) | 🟡 | AI / Logging | By design for now — note for audits |
+| KI-036 | `/chat` requests rejected with 400/422/429 are not written to `chat_logs` (PRD §28 logs interactions that reached the assistant) | 🟡 | AI / Logging | By design for now — note for audits Retrieval/DB failures **are** logged since 2026-10-07 (D-043) |
 | KI-037 | `frontend/package.json` lists `axios`, which nothing imports | 🟡 | Dependencies | Fixed 2026-10-07 — removed from `package.json` / `bun.lock` |
+| KI-038 | Chat: an unknown person written in lower case ("was bruce present") is not recognised as a person; an employee then gets their own record (with the "no person was named" note), other roles a clarification | 🟡 | AI | Open — names are detected by capitalisation (D-043) |
+| KI-039 | Chat group questions only cover overtime / late / absence thresholds and lists, department-wise overtime, rankings, headcount, on leave, company payroll; others (department attendance %, department payroll) get a clarification | 🟡 | AI | By design for now (D-043) — add a tool + question-bank case per new group question |
+| KI-040 | `PROJECT_DECISIONS.md` has no D-042 entry although CHANGELOG / STATUS / PLAN cite D-042 (session-7 code-splitting + pagination) | 🟡 | Docs | Open — the session-7 author should write it from CHANGELOG 2026-10-07 |
 
 ---
 
@@ -75,7 +78,10 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 - **Fixed 2026-10-06:** the hard-coded 2024 year default and the ignored "this month" (D-029); rankings, headcount, unnamed
   colleagues and company payroll questions (D-030). `tests/test_question_bank.py` is the regression bank — add a failing
   question there first when a new phrasing is reported.
-- **Still open:** LLM-assisted intent/entity extraction fallback (P2); multi-turn follow-ups ("and in August?").
+- **Fixed 2026-10-07 (session 8, D-043):** the "nobody named → the caller" fallback (group, employee-ID and threshold questions
+  were answered with the caller's own record); thresholds, department-wise overtime, on leave today, last week, PF, overtime
+  amount, hours worked, attendance %, employee ID lookup.
+- **Still open:** LLM-assisted intent/entity extraction fallback (P2); multi-turn follow-ups ("and in August?"). Lower-case unknown names: KI-038.
 
 ### KI-010 — Lexical retrieval
 - BM25 matches stemmed words, not meaning. **Proposed:** synonym map for common HR terms, or dense embeddings
@@ -150,3 +156,6 @@ Severity: 🔴 high · 🟠 medium · 🟡 low
 | R-020 | "What is another employee's salary?" (PRD demo 2) / "Show all salaries" answered with the caller's own salary | 2026-10-06 | Refused for non-HR roles (D-030) |
 | R-021 | "What is my attendance this month?" / "…most overtime this month?" (PRD demos 1, 4) answered with all-time totals | 2026-10-06 | `resolve_period` (D-029) |
 | R-022 | "Who was late the most?", "How many employees are in Engineering?", "Show all employee personal information" → UNKNOWN | 2026-10-06 | Ranking, headcount and directory tools (D-030) |
+| R-023 | Chat answered group / employee-ID questions with the caller's own record (HR: "Who is employee 1025?" → own profile; "Show department-wise overtime", "How many employees are on leave today?" → own attendance/leave) | 2026-10-07 | No caller fallback; group tools (D-043) |
+| R-024 | Chat: "How much PF was deducted?", "How many hours did Aman work?" → UNKNOWN; "What was the total overtime amount?" → the caller's attendance | 2026-10-07 | SALARY/ATTENDANCE cues + company summary (D-043) |
+| R-025 | Chat: LLM failure on a data question labelled `data_verified`; a DB/retrieval failure → 500 without a `chat_logs` row | 2026-10-07 | Confidence `unavailable`, retrieval errors caught and logged (D-043) |

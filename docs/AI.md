@@ -97,8 +97,8 @@ with a match wins. Order matters: *"What is the leave policy?"* contains both "l
 | # | Intent | Example patterns (word-bounded regexes) | Why this position |
 |---|---|---|---|
 | 1 | `POLICY` | policy/policies, rule(s), guideline(s), handbook, working/office hours, office timing, shift time, grace period, lunch break, public/national holiday, holiday list/calendar, upcoming holidays, "which/what are the company holidays", annual leave entitlement, entitled to, "how many leaves are allowed" | Rule questions mention leave/attendance words too |
-| 2 | `SALARY` | salary/salaries, payslip, pay slip, payroll, compensation, ctc, pf deduction, net/gross pay, net/gross salary, deductions, allowance(s), wage, earnings, "how much do I earn", "how much does X earn" | Most sensitive data — must not be mis-routed to a weaker rule |
-| 3 | `ATTENDANCE` | attendance, present, absent, absences, clock in/out, late, latecomer(s), late entry/arrival/mark, overtime, ot hours, working minutes, hours worked, days present/absent, "was X present", "who worked the highest overtime" | |
+| 2 | `SALARY` | salary/salaries, payslip, pay slip, payroll, compensation, ctc, pf, provident fund, overtime/ot amount/pay/payment/paid, net/gross pay, net/gross salary, deductions, allowance(s), wage, earnings, "how much do I earn", "how much does X earn" | Most sensitive data — must not be mis-routed to a weaker rule |
+| 3 | `ATTENDANCE` | attendance, present, absent, absences, clock in/out, late, latecomer(s), late entry/arrival/mark, overtime, ot hours, working minutes, hours worked, "hours … work(ed)", days present/absent, "was X present", "who worked the highest overtime" | |
 | 4 | `LEAVE` | leave(s), sick/casual/earned leave, time off, pto, vacation, leave balance/status/history, my leaves | |
 | 5 | `EMPLOYEE` | designation, department(s), manager, reporting/reports to, who is, employee code, joining date, joined, profile, team member, all employees, list employees, employee directory, personal information, how many employees/people/staff, headcount | |
 | 6 | `GENERAL` | starts with hi/hello/hey, who are you, what can you do, help, good morning/afternoon, thanks | |
@@ -118,9 +118,10 @@ fix path is a failing case in `tests/test_question_bank.py` first, then a patter
 
 | Entity | Function | Rules |
 |---|---|---|
-| Target employee | `find_target_employee(db, question, user)` | 1) employee code substring (`EMP004`) or first name / full name of any employee (first match in DB order) -> that employee; 2) "another employee", "someone else", "a colleague", "co-worker", "peer" -> *unnamed other*; 3) an `EMPnnn` code that matches nobody -> unknown person; 4) self words (my, me, I, mine, myself) -> the caller; 5) "of / for / about / who is / was / regarding / does <Name>" where the name is not a stopword -> unknown person; 6) otherwise -> the caller. |
+| Target employee | `find_target_employee(db, question, user)` -> `(employee, is_other, note)` | **D-043 — the caller's own record is never a fallback.** 1) `find_named_employee`: employee code substring (`EMP004`), employee ID ("employee 4", "employee ID 4", "emp #4" = the number of the code, EMP004 = 4), or first / full name -> that employee; a code or ID that matches nobody -> unknown person; 2) "another employee", "someone else", "a colleague", "co-worker", "peer" -> *unnamed other*; 3) a group (team, members, reports, employees, staff, people, everyone, company, departments, department-wise, or a department name from the data) -> no target (group); 4) self words (my, me, I, mine, myself) -> the caller; 5) "of / for / about / who is / was / regarding / does <Capitalised Name>" not a stopword -> unknown person; 6) nothing named: role `employee` and no aggregate word (total, average, most, who, which, …) -> the caller **with a note the answer must state** ("no person was named, so these are your records"); every other case -> **no target -> clarification** (`Clarification needed: …`, no records loaded). |
 | Month / year | `extract_month_and_year` | Full or short month names (`sep`, `sept`); "may" only counts after in/of/for/during/since/until/from/to or before a year (so "May I…" is not May); year = first `20xx`. A missing part is `None`. |
-| Period | `resolve_period` | See §5. |
+| Period | `resolve_period`, `resolve_date_range` | See §5. |
+| Group question | `refers_to_group`, `named_departments`, `_parse_threshold` | "more than / over / above / at least / >= N [hours|minutes]", "N or more"; overtime thresholds are hours unless "minutes" is written. |
 | Ranking metric | `detect_ranking_metric` | "most/highest/top … overtime", "late the most", "latecomers", "absent the most" -> `overtime` / `late` / `absent`. |
 
 ---
@@ -136,11 +137,14 @@ does not choose tools and cannot pass arguments; it never generates SQL. Every t
 | Policy from documents (POLICY, or UNKNOWN with a hit) | `app.rag.retriever.search` | all | top 4 chunks + document/file/page |
 | Policy fallback (POLICY, no document hit) | `router.load_policies` (`app/data/policies.json`) | all | matching section (leave / working hours / overtime / attendance rules / holidays) or the whole file |
 | Holiday calendar (any POLICY question containing "holiday") | `holiday_service.list_holidays(year)` | all | national + declared holidays of the named year (default: current) |
-| Company payroll ("total payroll", "all salaries", "payroll for 2024" with nobody named) | `salary_service.get_salary_summary`, `get_latest_payroll_period` | `hr`, `admin` (others: denied) | totals only — never a per-person table (AGENTS.md §3.6, D-030) |
-| One person's salary / payslip | `salary_service.get_salary_for_employee` (+ month/year filter) | self; `hr`, `admin` for anyone. **Managers and employees: never another person** | gross, PF, deductions, overtime amount, net per month |
-| Ranking: most overtime / late / absent | `attendance_service.rank_employees(metric, period, scope_ids, limit=5)` | `hr`, `admin` company-wide; `manager` self + direct reports (D-032); `employee` denied | top 5, ties share a rank |
-| One person's attendance | `attendance_service.get_attendance_summary(employee, start, end)` | self; manager for direct reports; `hr`, `admin` for anyone | day counts, late days, overtime, working minutes |
-| One person's leave | `leave_service.get_leave_balance(year)`, `leave_service.get_leaves_for_employee`, `leave_service.count_leave_days` + `holiday_service.get_declared_holiday_dates` | self; manager for direct reports; `hr`, `admin` | balance per type (working days) + application history |
+| Company payroll ("total payroll", "all salaries", "total PF", "total overtime amount", "payroll for 2024" with nobody named; not for one department) | `salary_service.get_salary_summary`, `get_latest_payroll_period` | `hr`, `admin` (others: denied) | totals only (gross, PF, other deductions, overtime paid, net) — never a per-person table (AGENTS.md §3.6, D-030) |
+| One person's salary / payslip / PF / overtime amount | `salary_service.get_salary_for_employee` (+ month/year filter) | self; `hr`, `admin` for anyone. **Managers and employees: never another person** | gross, PF, deductions, overtime amount, net per month + a Python-computed totals line when several months are listed |
+| Ranking: most overtime / late / absent | `attendance_service.rank_employees(metric, period, scope_ids, limit=5)` | `hr`, `admin` company-wide; `manager` self + direct reports (D-032); "my team" -> self + direct reports for any role; `employee` denied | top 5, ties share a rank |
+| Threshold / list: "employees with more than 5 late entries", "more than 10 hours overtime", "which members of my team worked overtime last week", "who was absent yesterday" | `attendance_service.rank_employees(..., limit=None)` + threshold filter | same as rankings | count + every matching employee with the figure; "No employees had …" when none |
+| Department-wise overtime | `attendance_service.get_overtime_by_department(period, scope_ids)` | same as rankings | per department: total overtime, employees with overtime / with records; total |
+| Who is on leave today / yesterday / tomorrow | `leave_service.get_employees_on_leave(date, scope_ids)` (approved leave covering the date — the dashboard rule) | `hr`, `admin` company-wide; `manager` own team; `employee` denied | count + name, type and dates per employee |
+| One person's attendance | `attendance_service.get_attendance_summary(employee, start, end)`, `attendance_service.attendance_percentage` | self; manager for direct reports; `hr`, `admin` for anyone | day counts, late days, overtime, working minutes, **hours worked**, **attendance %** (present + 0.5 × half days ÷ recorded working days; weekends/holidays excluded, leave and absence count as not attended) |
+| One person's leave | `leave_service.get_leave_balance(year)`, `leave_service.get_leave_days_in_range` (when a period is asked), `leave_service.get_leaves_for_employee`, `leave_service.count_leave_days` + `holiday_service.get_declared_holiday_dates` | self; manager for direct reports; `hr`, `admin` | balance per type (working days), leave taken in the asked period, application history |
 | Department headcount | `employee_service.list_departments(scope_ids)` | `hr`, `admin` company-wide; `manager` own team; `employee` denied (same as `GET /departments`) | per department: count, active, managers; total |
 | Employee directory / "all employees' personal information" | `employee_service.get_all_employees` | `hr`, `admin` (others: denied) | code, name, department, designation |
 | One person's profile | `find_target_employee` result | self: all roles; others: HR/Admin any, manager direct reports, employee refused (D-039, below) | code, name, department, designation, joining date, status, manager — no salary, email or role |
@@ -150,6 +154,12 @@ does not choose tools and cannot pass arguments; it never generates SQL. Every t
 **Unnamed other person (D-030):** "What is another employee's salary?" -> refused for every role that may not see other
 people's salary (everyone except HR/Admin); "another employee's attendance/leave" -> refused for employees; for roles that
 *could* see it, the context tells the LLM to ask which employee is meant instead of guessing.
+
+**No target, or an unsupported group question (D-043):** "How many days present in August?" asked by HR, or "Show the
+attendance of the Engineering department" (no tool for that) -> no records are loaded; the context starts with
+`Clarification needed:` and tells the LLM to ask whose records are meant / to suggest a supported group question;
+confidence `clarification_needed`. Roles that may not see that data for others (employees; salary: everyone but HR/Admin)
+get the usual access-denied refusal instead.
 
 **Calculations stay in Python (PRD §20):** attendance counts are SQL aggregates; late/overtime minutes come from
 `attendance_service.calculate_day_metrics` (D-007); leave days are working days excluding weekends and holidays (D-008,
@@ -176,7 +186,12 @@ by an employee is refused before the LLM is called (question bank C15–C18).
 | "2024" | the whole year | — |
 | nothing | all recorded dates (company payroll summary: latest payroll month, with a note) | payroll only |
 
-Leave questions use the calendar year (written year, else the current year), not `resolve_period`.
+`router.resolve_date_range(db, question, source)` (attendance questions, rankings, thresholds, department overtime, leave
+taken) adds day/week ranges before falling back to `resolve_period`: "today", "yesterday", "this week" (Monday -> today),
+"last/previous/past week" (the previous Monday -> Sunday); the label carries the dates (`last week (2026-09-28 to 2026-10-04)`).
+
+Leave balances use the calendar year (written year, else the current year). "Leave taken this month / last week" uses the
+calendar (`source="leave"`: "this month" is always the current month).
 
 ---
 
@@ -193,7 +208,7 @@ Applied in this order in `POST /chat`:
 | 5 | **RBAC before data** | `guardrails.check_rbac_access` + role checks in each router branch | Self -> allowed. HR/Admin -> allowed. Manager -> attendance / leave / profile of direct reports only; **salary of others never**. Employee -> others' salary / leave / attendance denied. Company payroll, directory: HR/Admin only. Rankings, headcount: HR/Admin, managers scoped to their team. A denial returns `Access denied: ...` as the answer, source = the data source, confidence `access_denied`, log error `RBAC_ACCESS_DENIED`, **LLM not called** — the denied data was never loaded. |
 | 6 | Salary confidentiality | SALARY branch | Per-person salary only for self or HR/Admin; company questions return totals only, never a per-person table. |
 | 7 | Grounded generation | system prompt §2.1 | The LLM may only use the verified context. |
-| 8 | Failure safety | `chat.py` | `LLMError` -> `The AI service is temporarily unavailable. Please try again.` (D-015); any other exception -> `An unexpected error occurred while processing your request.`; both logged with the error text. A failing log write never breaks the response. |
+| 8 | Failure safety | `chat.py` | Retrieval / database failure (document search, any router tool) -> session rolled back, `I could not retrieve the HR data needed to answer this right now. Please try again later.`, source `error`, **LLM not called**, log error `RETRIEVAL_ERROR: <type>: <message>`. `LLMError` -> `The AI service is temporarily unavailable. Please try again.` (D-015); any other exception in the LLM call -> `An unexpected error occurred while processing your request.`. All three: confidence `unavailable` (never `data_verified`), logged with the error text. A failing log write (e.g. the database itself is down) never breaks the response. |
 
 Because the permission check happens in Python on data the LLM has not seen, even a successful prompt injection that
 slipped past the regexes could not make the model reveal another person's salary: it is simply not in its context.
@@ -239,15 +254,17 @@ Full pipeline (upload -> parse -> chunk -> term vectors -> BM25 -> sources) and 
 
 | Value | Rule (checked in this order) |
 |---|---|
+| `unavailable` | no answer was produced: data retrieval failed, or the LLM call failed (`LLMError` or another exception) |
 | `access_denied` | prompt injection blocked, or RBAC denial |
+| `not_found` | the LLM answered with the exact "I could not find this information…" sentence (KI-035) |
 | `document_grounded` | context from uploaded documents (`data_source == "document_rag"`) |
 | `policy_reference` | context from `policies.json` |
 | `general` | GENERAL or out-of-scope UNKNOWN question |
-| `not_found` | the database context starts with "No " or contains "not found" / "no employee record" (e.g. unknown person, empty period, "No specific employee was named") |
+| `clarification_needed` | the context starts with `Clarification needed:` — nobody / no supported group could be identified, so nothing was retrieved (D-043) |
+| `not_found` | the database context starts with "No " or contains "not found" / "no employee record" (e.g. unknown person or employee ID, empty period, "No employees had more than 5 late entries") |
 | `data_verified` | anything else — numbers computed from MySQL |
 
-**Known gaps:** the LLM's answer is not post-checked against the context (a model could still mis-copy a number), and
-`document_grounded` is reported even when the model answers with the "could not find" sentence.
+**Known gap:** the LLM's answer is not post-checked against the context (a model could still mis-copy a number).
 
 ---
 
@@ -261,11 +278,15 @@ including refusals and LLM failures:
 | `user_id` | caller |
 | `question` | the question as sent (before sanitising) |
 | `detected_intent` | final intent (`POLICY` after an UNKNOWN re-route; `UNKNOWN` for blocked injections) |
-| `data_source` | RAG: file name of the best chunk; otherwise `guardrail`, `attendance_database`, `salary_database`, `leave_database`, `employee_database`, `policies.json` or `general` |
+| `data_source` | RAG: file name of the best chunk; otherwise `guardrail`, `attendance_database`, `salary_database`, `leave_database`, `employee_database`, `policies.json`, `general`, or `error` (retrieval failed) |
 | `response` | the answer returned (refusal text for denials) |
 | `timestamp` | server time (DB default) |
 | `response_time_ms` | from after the rate-limit check to just before logging (includes the LLM call) |
-| `error` | `PROMPT_INJECTION_BLOCKED`, `RBAC_ACCESS_DENIED`, the LLM error text, `Unexpected error: ...`, or `NULL` |
+| `error` | `PROMPT_INJECTION_BLOCKED`, `RBAC_ACCESS_DENIED`, `RETRIEVAL_ERROR: <type>: <message>`, the LLM error text, `Unexpected error: ...`, or `NULL` |
+
+A retrieval failure rolls the session back before the log row is written, so a failed query no longer turns into a 500
+without a log row. Only when the database itself is unreachable can the log write fail too (a warning is printed; the user
+still gets the "could not retrieve" answer).
 
 Reading the log: `GET /chat/history` (own last N, used by the chat page) and `GET /chat/logs` (admin audit: search by
 question or email, `limit`/`offset`, `X-Total-Count`; Settings -> AI audit log). Rows are never deleted by the app.
@@ -302,9 +323,9 @@ verified context the router passed to the mock (that is where the numbers come f
 
 | Test file | What it covers |
 |---|---|
-| `tests/test_question_bank.py` | **PRD §30 question bank** through `POST /chat`: **[A] 23 normal** questions (every role and intent, holiday calendar), **[B] 11 incorrect** (unknown people, empty periods, off-topic, gibberish, blank), **[C] 14 permission/security** (prompt injection, other people's salary/attendance, directory, rankings, manager rankings limited to the team — D-032), **[D] 14 calculation** (expected numbers computed independently from MySQL in the test), **[E] 11 RAG** (PDF with pages, DOCX, TXT upload -> answer + source; archive; new version). Refusals are checked with "LLM not called", not just the answer text. |
+| `tests/test_question_bank.py` | **PRD §30 question bank** through `POST /chat`: **[A] 23 normal** questions (every role and intent, holiday calendar), **[B] 11 incorrect** (unknown people, empty periods, off-topic, gibberish, blank), **[C] 14 permission/security** (prompt injection, other people's salary/attendance, directory, rankings, manager rankings limited to the team — D-032), **[D] 14 calculation** (expected numbers computed independently from MySQL in the test), **[F] 21 PRD capability** questions (thresholds on late entries / overtime hours / minutes, department-wise overtime, on leave today, "which members of my team worked overtime last week", PF, overtime amount, hours worked, attendance %, employee ID lookup, leave taken this month — expected numbers again from raw SQL), **[G] 13 no-substitution regressions + 8 direct `find_target_employee` checks** (ambiguous / group / department questions never return the caller's record — D-043), **[E] 11 RAG** (PDF with pages, DOCX, TXT upload -> answer + source; archive; new version). Refusals are checked with "LLM not called", not just the answer text. |
 | `tests/test_ai_router.py` | `classify_intent`, `extract_month_and_year`, `find_target_employee`, `retrieve_hr_context` |
-| `tests/test_chat_api.py` | 401, blank input 400, grounding, RBAC isolation, policies.json context, missing records, provider failure, chat logging |
+| `tests/test_chat_api.py` | 401, blank input 400, grounding, RBAC isolation, policies.json context, missing records, provider failure, chat logging; **[10] failures**: LLM failure / unexpected error / DB failure / document-search failure -> confidence `unavailable`, LLM not called after a retrieval failure, `chat_logs` row with the error |
 | `tests/test_rag.py` | chunker/embeddings, upload validation + RBAC, BM25 thresholds, document-grounded chat with source/page, injection refusal, archive, versioning |
 | `tests/test_llm.py` | LLM client configuration and error handling |
 | `tests/test_security_hardening.py` | secrets, rate limiter, trusted-proxy IP, login and chat 429 (blocked message reaches neither the LLM nor `chat_logs`) |

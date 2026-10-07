@@ -70,6 +70,10 @@ Dependencies:
 - [x] Tests for new endpoints (employees CRUD, departments, attendance daily/check-in, leaves list/balance/cancel/manager scope, salary list, documents/RAG, chat sources, users, dashboard/me)
 - [x] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — `tests/test_question_bank.py`
       (22 / 11 / 13 / 13 / 11 = 70 checks, 2026-10-06); fixed the router gaps it exposed (D-029, D-030, R-019…R-022)
+- [x] Session 8 (2026-10-07, D-043): no caller-record fallback in the chat router; thresholds, department-wise overtime,
+      on leave today, last week, PF / overtime amount, hours worked, attendance %, employee-ID lookup; chat failures logged
+      and labelled `unavailable` — question bank [F] 21 + [G] 21 checks, `test_chat_api.py` [10] (R-023…R-025)
+- [ ] Chat: lower-case unknown names (KI-038); more group tools on demand (KI-039); LLM-assisted intent fallback (KI-008, P2)
 
 ## Frontend redesign (D-026) — product-owner request, 2026-10-05
 

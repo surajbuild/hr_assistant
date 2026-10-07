@@ -210,6 +210,85 @@ try:
     chk(latest_log.error is not None and "network timeout" in latest_log.error,
         "ChatLog recorded provider error message", f"Error: {latest_log.error}")
 
+    # -----------------------------------------------------------------------
+    # [10] Failures are labelled honestly and still logged
+    # -----------------------------------------------------------------------
+    print("\n[10] Failure handling: confidence label + chat_logs row")
+
+    def latest_log_for(user_id: int, question: str):
+        db.commit()  # fresh snapshot (REPEATABLE READ)
+        return (
+            db.query(ChatLog)
+            .filter(ChatLog.user_id == user_id, ChatLog.question == question, ChatLog.id > client.chat_start_id)
+            .order_by(ChatLog.id.desc())
+            .first()
+        )
+
+    # 10.1 LLM failure on a database question: the context was verified, but no answer was produced
+    q = "What is my latest salary?"
+    with patch("app.api.chat.generate_response") as mock_llm:
+        mock_llm.side_effect = LLMProviderError("simulated provider outage")
+        r = client.post("/chat", json={"message": q}, headers=aman_headers)
+    data = r.json()
+    chk(r.status_code == 200 and data.get("confidence") == "unavailable",
+        "LLM failure on a data question -> confidence 'unavailable' (not data_verified)",
+        f"Status {r.status_code}, confidence {data.get('confidence')}")
+    chk("temporarily unavailable" in data.get("answer", "") and "₹" not in data.get("answer", ""),
+        "LLM failure answer is the fixed unavailable message (no data leaked)", f"Answer: {data.get('answer')}")
+    log = latest_log_for(aman_user.id, q)
+    chk(log is not None and "simulated provider outage" in (log.error or "") and log.detected_intent == "SALARY",
+        "LLM failure is written to chat_logs with the error", f"Log: {log and (log.detected_intent, log.error)}")
+
+    # 10.2 Unexpected exception inside the LLM call
+    q = "How many days was I present in August 2024?"
+    with patch("app.api.chat.generate_response") as mock_llm:
+        mock_llm.side_effect = RuntimeError("boom")
+        r = client.post("/chat", json={"message": q}, headers=aman_headers)
+    chk(r.status_code == 200 and r.json().get("confidence") == "unavailable",
+        "Unexpected LLM-call error -> 200 + confidence 'unavailable'", f"{r.status_code} {r.text[:200]}")
+
+    # 10.3 Database / retrieval failure: no 500, LLM not called, a chat_logs row is still written
+    from sqlalchemy.exc import OperationalError
+    q = "How many days was Aman present in August 2024?"
+    with patch("app.api.chat.retrieve_hr_context",
+               side_effect=OperationalError("SELECT 1", {}, Exception("simulated DB outage"))), \
+            patch("app.api.chat.generate_response") as mock_llm:
+        mock_llm.return_value = "SHOULD NOT BE USED"
+        r = client.post("/chat", json={"message": q}, headers=hr_headers)
+        llm_called = mock_llm.called
+    data = r.json() if r.status_code == 200 else {}
+    chk(r.status_code == 200, "Retrieval failure returns 200 with a fallback answer (no 500)", f"Status {r.status_code}: {r.text[:200]}")
+    chk(data.get("confidence") == "unavailable" and data.get("source") == "error" and not llm_called,
+        "Retrieval failure -> confidence 'unavailable', source 'error', LLM not called",
+        f"confidence={data.get('confidence')} source={data.get('source')} llm_called={llm_called}")
+    chk("could not retrieve the HR data" in data.get("answer", ""),
+        "Retrieval failure answer says the data could not be retrieved", f"Answer: {data.get('answer')}")
+    log = latest_log_for(neha_hr.id, q)
+    chk(log is not None and (log.error or "").startswith("RETRIEVAL_ERROR: OperationalError")
+        and log.detected_intent == "ATTENDANCE" and log.data_source == "error",
+        "Retrieval failure is written to chat_logs (intent, source 'error', RETRIEVAL_ERROR)",
+        f"Log: {log and (log.detected_intent, log.data_source, log.error)}")
+
+    # 10.4 Document retrieval failure on a policy question
+    q = "What is the leave policy?"
+    with patch("app.api.chat.retrieve_policy_context", side_effect=RuntimeError("index unavailable")), \
+            patch("app.api.chat.generate_response") as mock_llm:
+        r = client.post("/chat", json={"message": q}, headers=aman_headers)
+        llm_called = mock_llm.called
+    log = latest_log_for(aman_user.id, q)
+    chk(r.status_code == 200 and r.json().get("confidence") == "unavailable" and not llm_called
+        and log is not None and "index unavailable" in (log.error or ""),
+        "Document retrieval failure -> 'unavailable', logged, LLM not called",
+        f"{r.status_code} {r.text[:200]} log={log and log.error}")
+
+    # 10.5 The successful path is unchanged
+    q = "How many days was I present in August 2024?"
+    with patch("app.api.chat.generate_response") as mock_llm:
+        mock_llm.return_value = "You were present 22 days."
+        r = client.post("/chat", json={"message": q}, headers=aman_headers)
+    chk(r.status_code == 200 and r.json().get("confidence") == "data_verified",
+        "Successful data answer still labelled data_verified", f"{r.status_code} {r.text[:200]}")
+
     print("\n" + SEP)
     print(f"  Results: {passed} passed, {failed} failed")
     print(SEP)

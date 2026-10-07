@@ -16,8 +16,10 @@ POST /chat flow:
     5. Fetch verified data via services (no arbitrary SQL):
          POLICY → RAG over uploaded documents, falling back to policies.json.
          Others → controlled service calls with RBAC checks.
+       A retrieval/database failure → fixed "could not retrieve" answer (no LLM call), confidence `unavailable`.
     6. Pass structured context + question to the LLM with anti-hallucination prompts.
-    7. Log interaction into chat_logs.
+       LLM failure → "temporarily unavailable" answer, confidence `unavailable` (never `data_verified`).
+    7. Log interaction into chat_logs (also for refusals and failures; the error column says what failed).
     8. Return answer + source/confidence metadata.
 """
 
@@ -34,6 +36,7 @@ from app.ai.guardrails import PROMPT_INJECTION_REFUSAL, detect_prompt_injection,
 from app.ai.llm import LLMError, generate_response
 from app.ai.prompts import SYSTEM_HR_ASSISTANT_PROMPT, build_chat_prompt
 from app.ai.router import (
+    CLARIFICATION_PREFIX,
     Intent,
     classify_intent,
     holiday_calendar_context,
@@ -49,6 +52,9 @@ from app.utils.pagination import set_total_count
 router = APIRouter(tags=["AI Chat"])
 
 NO_DOCUMENT_ANSWER = "I could not find this information in the available HR documents."
+LLM_UNAVAILABLE_ANSWER = "The AI service is temporarily unavailable. Please try again."
+RETRIEVAL_FAILED_ANSWER = "I could not retrieve the HR data needed to answer this right now. Please try again later."
+UNEXPECTED_ERROR_ANSWER = "An unexpected error occurred while processing your request."
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +111,10 @@ class ChatLogItem(ChatHistoryItem):
     error: Optional[str] = None
 
 
-def _confidence(source: str, denied: bool, context: str, answer: str = "") -> str:
+def _confidence(source: str, denied: bool, context: str, answer: str = "", unavailable: bool = False) -> str:
+    # No answer was produced (data retrieval or the LLM failed) — never report that as verified data.
+    if unavailable:
+        return "unavailable"
     if denied:
         return "access_denied"
     # The LLM may report that the retrieved context did not contain the answer (KI-035).
@@ -117,6 +126,8 @@ def _confidence(source: str, denied: bool, context: str, answer: str = "") -> st
         return "policy_reference"
     if source == "general":
         return "general"
+    if context.startswith(CLARIFICATION_PREFIX):
+        return "clarification_needed"
     lowered = context.lower()
     if lowered.startswith("no ") or "not found" in lowered or "no employee record" in lowered:
         return "not_found"
@@ -157,6 +168,7 @@ def chat_endpoint(
     page: Optional[int] = None
     sources: List[Dict[str, Any]] = []
     denied = False
+    unavailable = False
     context_str = ""
 
     # 1. Prompt-injection guardrail — no data is touched for these requests
@@ -175,29 +187,39 @@ def chat_endpoint(
         # 3. Retrieve Controlled Data Context
         #    POLICY → search uploaded documents. UNKNOWN → also try the documents: a strong
         #    match (e.g. "how many days can I work from home?") re-routes the question to POLICY.
-        policy_hit = None
-        if intent in (Intent.POLICY, Intent.UNKNOWN):
-            policy_hit = retrieve_policy_context(db, cleaned_question)
-            if policy_hit and intent == Intent.UNKNOWN:
-                intent = Intent.POLICY
-                intent_value = intent.value
-        if policy_hit:
-            context_str, primary_file, page, sources = policy_hit
-            data_source = "document_rag"
-            calendar_context = holiday_calendar_context(db, cleaned_question)
-            if calendar_context:
-                context_str += "\n\n" + calendar_context
-        else:
-            context_str, data_source, denial_reason = retrieve_hr_context(
-                db, current_user, intent, cleaned_question
-            )
+        #    A database / retrieval failure is answered and logged here instead of becoming a 500
+        #    without a chat_logs row.
+        data_source = "error"
+        try:
+            policy_hit = None
+            if intent in (Intent.POLICY, Intent.UNKNOWN):
+                policy_hit = retrieve_policy_context(db, cleaned_question)
+                if policy_hit and intent == Intent.UNKNOWN:
+                    intent = Intent.POLICY
+                    intent_value = intent.value
+            if policy_hit:
+                context_str, primary_file, page, sources = policy_hit
+                data_source = "document_rag"
+                calendar_context = holiday_calendar_context(db, cleaned_question)
+                if calendar_context:
+                    context_str += "\n\n" + calendar_context
+            else:
+                context_str, data_source, denial_reason = retrieve_hr_context(
+                    db, current_user, intent, cleaned_question
+                )
+        except Exception as exc:
+            db.rollback()  # a failed query leaves the session unusable for the log write below
+            error_log = f"RETRIEVAL_ERROR: {type(exc).__name__}: {str(exc)[:500]}"
+            answer = RETRIEVAL_FAILED_ANSWER
+            unavailable = True
+            data_source, context_str, page, sources = "error", "", None, []
 
         if denial_reason:
             # Access denied by RBAC guardrail — do not query the LLM
             answer = denial_reason
             error_log = "RBAC_ACCESS_DENIED"
             denied = True
-        else:
+        elif not unavailable:  # nothing was retrieved after a failure → the LLM is not called
             # 4. Generate Grounded Response via LLM
             prompt = build_chat_prompt(cleaned_question, context_str, intent_value)
             if intent == Intent.POLICY:
@@ -211,10 +233,12 @@ def chat_endpoint(
                 )
             except LLMError as exc:
                 error_log = str(exc)
-                answer = "The AI service is temporarily unavailable. Please try again."
+                answer = LLM_UNAVAILABLE_ANSWER
+                unavailable = True
             except Exception as exc:
                 error_log = f"Unexpected error: {exc}"
-                answer = "An unexpected error occurred while processing your request."
+                answer = UNEXPECTED_ERROR_ANSWER
+                unavailable = True
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -245,7 +269,7 @@ def chat_endpoint(
         intent=intent_value,
         answer=answer,
         source=display_source,
-        confidence=_confidence(data_source, denied, context_str, answer),
+        confidence=_confidence(data_source, denied, context_str, answer, unavailable),
         page=page,
         sources=sources,
     )

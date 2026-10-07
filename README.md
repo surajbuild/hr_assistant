@@ -314,13 +314,14 @@ python scripts/db_snapshot.py diff before.json     # -> "Database unchanged"
 python scripts/db_snapshot.py isolate              # which test file (if any) changes the DB
 ```
 The LLM is always mocked.
-Key suites: `test_question_bank.py` (**PRD §30 question bank**: 23 normal / 11 incorrect / 14 security / 14 calculation
-questions + 11 RAG checks through `POST /chat`, expected numbers computed from MySQL in the test),
+Key suites: `test_question_bank.py` (**PRD §30 question bank**: 23 normal / 11 incorrect / 18 security / 14 calculation
+/ 21 PRD-capability / 13+8 no-caller-substitution questions + 11 RAG checks through `POST /chat`, expected numbers computed
+from MySQL in the test; 119 checks),
 `test_holidays_corrections.py` (holidays, attendance corrections, mark-paid, pagination, 73),
 `test_pagination_cleanups.py` (`/users` `/leaves` `/documents` pagination, user service, chat confidence, 24), `test_security_hardening.py`
 (secrets + rate limits, 32),
 `test_hrms_endpoints.py` (HRMS APIs, 88 checks), `test_payroll.py` (payroll engine, 36), `test_rag.py` (RAG + guardrails, 38),
-`test_rbac_matrix.py` (permissions, 77), `test_chat_api.py`, `test_ai_router.py`, `test_reports_api.py`.
+`test_rbac_matrix.py` (permissions, 77), `test_chat_api.py` (incl. LLM/DB failure handling, 39), `test_ai_router.py`, `test_reports_api.py`.
 
 Frontend: `cd frontend && bunx tsc --noEmit -p . && bun run build`.
 

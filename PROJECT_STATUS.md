@@ -1,6 +1,6 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-07, session 7** (cleanups: user service, chat confidence post-check, frontend code-splitting,
+Last updated: **2026-10-07, session 8** (AI chat targeting / PRD questions / failure handling, D-043). Session 7 (cleanups: user service, chat confidence post-check, frontend code-splitting,
 pagination for `/users` `/leaves` `/documents`, `axios` removed). Earlier: session 6 Docker bring-up, session 5 hardening/redesign.
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
@@ -28,16 +28,16 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | "Mark as paid" action | ✅ | `POST /salary/mark-paid`, irreversible, locks the month (D-036) |
 | List pagination | ✅ | `/employees`, `/attendance/records`, `/chat/logs` — `limit`/`offset` + `X-Total-Count` (D-035); browser-verified |
 | Document upload + RAG indexing | ✅ | PDF (page-aware), DOCX, TXT; versioning; archive |
-| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent; managers team-scoped, D-032), department headcount, company payroll summary, holidays, "this month"/month-only periods (D-029, D-030); profile lookups follow REST (D-039) |
-| PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 22 normal / 11 incorrect / 13 security / 13 calculation / 11 RAG (70 checks) |
+| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent; managers team-scoped, D-032), thresholds, department-wise overtime, on leave today, employee-ID lookup, PF / overtime amount, hours worked, attendance %, last week (D-043), department headcount, company payroll summary, holidays, "this month"/month-only periods (D-029, D-030); profile lookups follow REST (D-039); **never substitutes the caller's record** (D-043) |
+| PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 119 checks: [A] 23 · [B] 11 · [C] 18 · [D] 14 · [F] 21 PRD capability · [G] 13 + 8 no-substitution · [E] 11 RAG |
 | AI chat: policy Q&A via RAG with sources | ✅ | D-009 |
 | Prompt-injection protection | ✅ | D-011 |
-| Chat logging + history + admin audit log | ✅ | |
+| Chat logging + history + admin audit log | ✅ | Retrieval/LLM failures logged, confidence `unavailable` (D-043) |
 | Dashboard (HR summary + trend, personal `/dashboard/me`) | ✅ | Live current-month demo data via `generate_demo_month.py` |
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
 | Frontend: 13 pages | ✅ | **Redesign complete** (D-026, D-037, D-040): all 13 pages on design system v2, light + dark; legacy bridge deleted; `ui_qa.py` 0 issues, axe 0 violations in both themes |
-| Automated tests | ✅ | 38 files, 906 checks, all passing (2026-10-07); dev DB unchanged by a run (D-023) |
+| Automated tests | ✅ | 38 files, 958 checks, all passing (2026-10-07 session 8); dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
 | README / docs | ✅ | + `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md` (PRD §33) |
 | Deployment | 🟡 | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; stack built and verified healthy in session 6 (see CHANGELOG) |
@@ -69,6 +69,12 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Git history is maintained | 🟡 Sessions 1–4 are committed on `feature/hr-assistant` (HEAD `7b3e79e`; `main` is far behind). **All session-5 work is uncommitted** (≈ 46 modified + new files) — commit when the product owner asks |
 
 ## 3. Test status
+
+Session 8 (2026-10-07): baseline **906** checks passing → after the change **958 passed, 0 failed** (38 files); `db_snapshot.py`
+diff vs the session-start snapshot: "Database unchanged". New question-bank sections [F]/[G] fail 34× (+ a crash) on the old router.
+`tsc` ✅ · `bun run build` ✅ · `export_api_docs.py --check` ✅ · `ui_qa.py` 0 issues (dev frontend on :3001, because :3000 was the
+running Docker stack) · axe AI Assistant page light + dark 0 violations. **Not verified:** answers from the real LLM (all chat checks
+mock it — the verified contexts were checked); the Docker images were not rebuilt.
 
 Final full run, 2026-10-06 session 5 (`python scripts/run_tests.py`): **37 files, 882 checks passed, 0 failed**
 (new: `test_holidays_corrections.py`, `test_security_hardening.py`; question bank extended to C14–C18 / D14).
@@ -125,11 +131,16 @@ for `/users`, `/leaves`, `/documents`. Verified: `run_tests.py` 906/906, DB unch
 **Not verified:** axe scan after code-splitting (only `ui_qa.py` + a dashboard screenshot were checked); the Docker image was
 not rebuilt with the new frontend build.
 
+**Session 8 (2026-10-07):** chat router no longer falls back to the caller (D-043); PRD §7–§10 questions (thresholds, department
+overtime, on leave today, last week, PF, overtime amount, hours, attendance %, employee ID) answered; chat failures logged and
+labelled `unavailable`. Uncommitted.
+
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
-1. **Commit** the session-7 cleanups (when the product owner asks).
+1. **Commit** the session-7 and session-8 work (when the product owner asks).
 2. Owner decision on Google sign-in auto-provisioning (KI-033: domain allow-list / `email_verified`).
 3. Use the new pagination in the Leave / Documents / Users UI tables; `/salary` pagination.
-4. Rebuild the Docker images (`docker compose up -d --build`) to ship the split frontend build.
+4. Rebuild the Docker images (`docker compose up -d --build`) to ship the split frontend build and the session-8 chat changes.
+5. Owner check of D-043's one judgment call (employees' unnamed questions answered for themselves with a note) and KI-038/KI-039/KI-040.
 
 ## 6. History
 

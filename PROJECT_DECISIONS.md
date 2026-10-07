@@ -444,3 +444,43 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
   the login through `/api/auth/google/login`, so the callback must use the same origin (the session cookie is set there too).
 - **Impact:** that URI must be registered in Google Cloud Console. `FRONTEND_URL` stays `http://localhost:3000`. Real Google
   round-trip still unverified (KI-004).
+
+### D-043 — The chat never substitutes the caller's record; group / threshold / PF / hours questions get their own tools
+- **Date:** 2026-10-07 (session 8)
+- **Decision:**
+  - `router.find_target_employee` lost its last line ("nobody named → the caller"). It now returns `(employee, is_other, note)`:
+    a named employee (code, **employee ID** — "employee 4" = the number of the code, EMP004 — or name); unknown code/ID/name or an
+    unnamed colleague → nobody (`not_found` / refusal, D-030); a team, department, "employees", company … question → nobody
+    (group); "my / I / me" → the caller. When **nothing** is named: the `employee` role gets their own record **with a note the
+    answer must state** ("no person was named, so these are your records") unless the wording is aggregate (total, average,
+    most, who, which …) — an employee can only ever see their own records, so a plain "How much PF was deducted?" can only mean
+    them. Every other role gets a **clarification** context (`Clarification needed: …`, no records loaded, confidence
+    `clarification_needed`) instead of their own figures.
+  - Group questions with no tool ("attendance of the Engineering department", "salary of the Engineering department") → the
+    same clarification for roles that may see the data, the usual access denial for those that may not.
+  - New controlled tools (same roles/scope as the rankings, D-032: HR/Admin company-wide, managers self + direct reports,
+    employees refused): thresholds ("more than 5 late entries", "more than 10 hours overtime", "at least …", "N or more"),
+    lists ("who worked overtime last week", "which members of my team …"), department-wise overtime
+    (`attendance_service.get_overtime_by_department`), who is on approved leave today/yesterday/tomorrow
+    (`leave_service.get_employees_on_leave`, the dashboard rule). "my team" → self + direct reports for any role.
+  - Individual attendance context adds hours worked and an **attendance percentage** = (present days + 0.5 × half days) ÷
+    recorded working days (recorded days minus weekend/holiday rows; absences and leave count as not attended) —
+    `attendance_service.attendance_percentage`. For Aman, August 2024 this gives 22 of 24 = 91.7 %, matching the PRD §1 example.
+  - SALARY intent now covers "PF", "provident fund", "overtime amount/pay"; "total PF / total overtime amount" with nobody named is
+    the company payroll summary (HR/Admin; others refused). A per-person salary context lists a Python-computed totals line when
+    several months are shown, so the LLM never adds money up. A department name is never answered with the company summary.
+  - `resolve_date_range`: "today", "yesterday", "this week", "last week" (previous Monday–Sunday) for attendance, rankings,
+    thresholds, department overtime and "leave taken in …".
+  - `POST /chat` failures: a retrieval/database exception is caught (session rolled back, fixed "could not retrieve" answer, LLM
+    not called, `chat_logs.error = RETRIEVAL_ERROR: …`, source `error`); LLM failures keep their message. Both → confidence
+    `unavailable` (previously an LLM failure on a data question was labelled `data_verified`, and a DB failure was a 500 without a
+    log row). The chat UI knows the two new labels (`clarification_needed`, `unavailable`).
+- **Reason:** project audit (session 8): HR asking "Who is employee 1025?", "Show department-wise overtime", "How many employees are on
+  leave today?" received **their own** profile/attendance/leave record, labelled `data_verified`; several PRD §7–§10 example
+  questions were mis-routed (PF and "hours did X work" → UNKNOWN; "total overtime amount" → the caller's attendance).
+- **Alternatives:** clarification for every role including employees (rejected: an employee's plain question has exactly one
+  possible subject; the note keeps it explicit — easy to switch off in `find_target_employee` if the owner prefers);
+  answering clarifications without the LLM (kept the existing pattern: the LLM gets a context with no figures, as for D-030).
+- **Impact:** no permission rule changed. `tests/test_question_bank.py` [F] (21 PRD questions, numbers from raw SQL) and [G]
+  (13 no-substitution questions + 8 direct target checks); `tests/test_chat_api.py` [10] (failure handling). Against the old code
+  34 question-bank checks fail and the target check crashes; the retrieval-failure test raised a 500.

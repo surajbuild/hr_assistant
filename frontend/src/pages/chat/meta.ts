@@ -49,7 +49,15 @@ export const ACCESS_SCOPE: Record<Role, string> = {
   admin: "Company-wide HR data including payroll, plus policies and holidays.",
 };
 
-export type ConfidenceKey = "data_verified" | "document_grounded" | "policy_reference" | "not_found" | "access_denied" | "general";
+export type ConfidenceKey =
+  | "data_verified"
+  | "document_grounded"
+  | "policy_reference"
+  | "not_found"
+  | "clarification_needed"
+  | "access_denied"
+  | "unavailable"
+  | "general";
 export type ConfidenceTone = "present" | "brand" | "half" | "late" | "absent" | "neutral";
 
 export interface ConfidenceInfo {
@@ -80,10 +88,20 @@ export const CONFIDENCE: Record<ConfidenceKey, ConfidenceInfo> = {
     description: "The HR system has no records for what was asked (for example that person or period).",
     tone: "late",
   },
+  clarification_needed: {
+    label: "Needs clarification",
+    description: "The question did not say whose records (or which group) it is about, so nothing was retrieved. Name the employee or rephrase.",
+    tone: "late",
+  },
   access_denied: {
     label: "Access restricted",
     description: "Your role is not allowed to see this. Nothing was retrieved and the AI was not asked.",
     tone: "absent",
+  },
+  unavailable: {
+    label: "Service unavailable",
+    description: "The HR data or the AI service could not be reached, so no answer was produced. Please try again.",
+    tone: "neutral",
   },
   general: {
     label: "General answer",
@@ -92,7 +110,16 @@ export const CONFIDENCE: Record<ConfidenceKey, ConfidenceInfo> = {
   },
 };
 
-export const CONFIDENCE_ORDER: ConfidenceKey[] = ["data_verified", "document_grounded", "policy_reference", "not_found", "access_denied", "general"];
+export const CONFIDENCE_ORDER: ConfidenceKey[] = [
+  "data_verified",
+  "document_grounded",
+  "policy_reference",
+  "not_found",
+  "clarification_needed",
+  "access_denied",
+  "unavailable",
+  "general",
+];
 
 export function confidenceInfo(value: string | number | null | undefined): (ConfidenceInfo & { key: ConfidenceKey }) | null {
   if (typeof value !== "string") return null;
@@ -111,7 +138,7 @@ const DATA_SOURCES: Record<string, string> = {
 };
 
 /** Sources that are not worth a chip (no data behind them). */
-const SILENT_SOURCES = new Set(["general", "guardrail", "unknown", ""]);
+const SILENT_SOURCES = new Set(["general", "guardrail", "unknown", "error", ""]);
 
 export interface SourceChip {
   key: string;

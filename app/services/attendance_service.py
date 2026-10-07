@@ -276,10 +276,11 @@ def rank_employees(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     scope_ids: Optional[Set[int]] = None,
-    limit: int = 3,
+    limit: Optional[int] = 3,
 ) -> List[Dict[str, Any]]:
     """
     Rank employees by an attendance metric, highest first. Employees with a zero value are left out.
+    `limit=None` returns every employee with a non-zero value (threshold / "who did overtime" questions).
 
     metric:
       - "overtime": total overtime minutes
@@ -338,7 +339,67 @@ def rank_employees(
         item["value"] = {"overtime": item["overtime_minutes"], "late": item["late_days"], "absent": item["absent_days"]}[metric]
         if item["value"] > 0:
             ranked.append(item)
-    return ranked[:limit]
+    return ranked if limit is None else ranked[:limit]
+
+
+def get_overtime_by_department(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Overtime per department (department = employees.department, D-005), highest total first.
+
+    Returns dicts: department, total_overtime_minutes, employees_with_overtime, employees_with_records.
+    """
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    total = func.sum(Attendance.overtime_minutes)
+    query = (
+        db.query(
+            Employee.department,
+            total.label("total_overtime_minutes"),
+            func.count(func.distinct(case((Attendance.overtime_minutes > 0, Employee.id)))).label("with_overtime"),
+            func.count(func.distinct(Employee.id)).label("with_records"),
+        )
+        .join(Attendance, Attendance.employee_id == Employee.id)
+    )
+    if scope_ids is not None:
+        query = query.filter(Employee.id.in_(scope_ids or {-1}))
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+    rows = query.group_by(Employee.department).order_by(total.desc(), Employee.department.asc()).all()
+    return [
+        {
+            "department": row.department,
+            "total_overtime_minutes": int(row.total_overtime_minutes or 0),
+            "employees_with_overtime": int(row.with_overtime or 0),
+            "employees_with_records": int(row.with_records or 0),
+        }
+        for row in rows
+    ]
+
+
+def attendance_percentage(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Attendance percentage from a get_attendance_summary() result.
+
+    working days = recorded days that are not weekends or holidays (approved leave and absences count as
+                   working days not attended)
+    attended     = present days + 0.5 x half days
+    percentage   = attended / working days x 100, one decimal; None when there are no recorded working days.
+    """
+    working_days = summary["total_days"] - summary["weekend_days"] - summary["holiday_days"]
+    attended = summary["present_days"] + 0.5 * summary["half_day_days"]
+    return {
+        "working_days": working_days,
+        "attended_days": attended,
+        "percentage": round(attended / working_days * 100, 1) if working_days > 0 else None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -306,6 +306,58 @@ def get_leave_balance(db: Session, employee_id: int, year: Optional[int] = None)
     return balance
 
 
+def get_leave_days_in_range(db: Session, employee_id: int, start: date, end: date) -> List[Dict[str, Any]]:
+    """
+    Working days of leave per type that fall inside [start, end] (leaves overlapping the range are clipped).
+    Returns one dict per leave type: leave_type, approved, pending.
+    """
+    holidays = get_declared_holiday_dates(db, start, end)
+    leaves = (
+        db.query(Leave)
+        .filter(Leave.employee_id == employee_id, Leave.from_date <= end, Leave.to_date >= start)
+        .all()
+    )
+    result = []
+    for leave_type in LEAVE_ENTITLEMENTS:
+        days = {LeaveStatus.APPROVED.value: 0, LeaveStatus.PENDING.value: 0}
+        for lv in leaves:
+            if lv.leave_type == leave_type and lv.status in days:
+                days[lv.status] += count_leave_days(max(lv.from_date, start), min(lv.to_date, end), holidays=holidays)
+        result.append({
+            "leave_type": leave_type,
+            "approved": days[LeaveStatus.APPROVED.value],
+            "pending": days[LeaveStatus.PENDING.value],
+        })
+    return result
+
+
+def get_employees_on_leave(db: Session, on_date: date, scope_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
+    """Employees with an approved leave covering `on_date` (same rule as the dashboard's "on leave today")."""
+    query = (
+        db.query(Leave, Employee)
+        .join(Employee, Employee.id == Leave.employee_id)
+        .filter(
+            Leave.status == LeaveStatus.APPROVED.value,
+            Leave.from_date <= on_date,
+            Leave.to_date >= on_date,
+        )
+    )
+    if scope_ids is not None:
+        query = query.filter(Leave.employee_id.in_(scope_ids or {-1}))
+    return [
+        {
+            "employee_id": emp.id,
+            "employee_code": emp.employee_code,
+            "employee_name": emp.name,
+            "department": emp.department,
+            "leave_type": lv.leave_type,
+            "from_date": lv.from_date,
+            "to_date": lv.to_date,
+        }
+        for lv, emp in query.order_by(Employee.name.asc()).all()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Company / Team listing
 # ---------------------------------------------------------------------------

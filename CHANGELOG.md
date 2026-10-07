@@ -2,6 +2,34 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-07 (session 8 — AI chat: targeting, PRD questions, failure handling)
+
+### Fixed
+- The chat router no longer answers with the caller's own record when it cannot tell who a question is about: group,
+  department, company, threshold, employee-ID and unclear questions get a group tool, a refusal or a clarification
+  (`clarification_needed`) — D-043, R-023. Example: HR "Who is employee 1025?" used to return HR's own profile.
+- "How much PF was deducted?", "How many hours did Aman work?" (were UNKNOWN) and "What was the total overtime amount?"
+  (was the caller's attendance) — R-024.
+- `POST /chat`: a database/retrieval failure is caught, rolled back, answered with a fixed message and written to `chat_logs`
+  (`RETRIEVAL_ERROR: …`, source `error`) instead of a 500 without a log row; LLM failures are no longer labelled
+  `data_verified` — both get confidence `unavailable` (R-025).
+
+### Added
+- Router tools: thresholds ("more than 5 late entries", "more than 10 hours overtime", "at least", "N or more"), lists ("which
+  members of my team worked overtime last week"), department-wise overtime, who is on leave today/yesterday/tomorrow,
+  employee-ID lookup ("employee 4" = EMP004), "today / yesterday / this week / last week" ranges, hours worked and attendance %
+  in the individual context, leave taken in a period, a Python totals line for multi-month salary contexts.
+- Services: `attendance_service.get_overtime_by_department`, `attendance_service.attendance_percentage`,
+  `rank_employees(limit=None)`, `leave_service.get_leave_days_in_range`, `leave_service.get_employees_on_leave`.
+- Chat UI answer labels "Needs clarification" and "Service unavailable" (`frontend/src/pages/chat/meta.ts`; metadata only).
+- Tests: question bank [F] (21 PRD questions) and [G] (13 + 8 no-substitution checks); `test_chat_api.py` [10] (failures).
+
+### Verification
+- `scripts/run_tests.py`: 38 files, **958 checks, 0 failed** (baseline this session: 906); DB unchanged vs the session-start snapshot.
+- The new [F]/[G] checks run against the old router: 34 failures + a crash; the new chat failure tests: 2 failures + an unhandled 500.
+- `bunx tsc --noEmit`, `bun run build`, `export_api_docs.py --check` clean; `ui_qa.py` (dev frontend on :3001) 0 issues;
+  axe WCAG 2.1 A/AA on the AI Assistant page 0 violations in light and dark.
+
 ## 2026-10-07 (session 7 — cleanups)
 
 ### Added

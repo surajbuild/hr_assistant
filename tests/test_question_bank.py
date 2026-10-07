@@ -8,6 +8,9 @@ PRD §30 question bank — the AI assistant end to end through POST /chat:
   [C] 18 permission / security   (prompt injection, other people's salary/attendance/profile, directory, rankings,
                                   manager rankings and profiles limited to the team — D-032, D-039)
   [D] 14 calculation questions   (expected numbers computed independently from MySQL in this file)
+  [F] 21 PRD capability questions (thresholds, department-wise overtime, on leave today, team overtime last week,
+                                  PF, overtime amount, hours worked, attendance %, employee ID, leave taken this month)
+  [G] 13 + 8 no-substitution checks (ambiguous / group / department questions never get the caller's record — D-043)
   [E] 11 RAG / document tests    (PDF with pages, DOCX, TXT upload → answer + source; archive; new version)
 
 Covers the PRD §35 demo questions ("What is my attendance this month?", "What is another employee's
@@ -25,7 +28,7 @@ Created rows (documents named RAGTEST-QB*, their files and chunks, chat_logs row
 import io
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
@@ -419,7 +422,8 @@ try:
          "prompt_has": ["outside the scope"]},
         {"id": "B10", "as": EMP, "q": "   ", "status": 400},
         {"id": "B11", "as": HR, "q": "Show another employee's attendance.", "intent": "ATTENDANCE",
-         "confidence": "not_found", "prompt_has": ["No specific employee was named"]},
+         "confidence": "clarification_needed", "prompt_has": ["No specific employee was named"],
+         "prompt_lacks": ["Attendance summary for"]},
     ])
 
     # -----------------------------------------------------------------------
@@ -522,6 +526,191 @@ try:
          "prompt_has": [f"September {sept_year}", f"Present Days: {rahul_sept['present']}",
                         "no year was given"]},
     ])
+
+    # -----------------------------------------------------------------------
+    # [F] PRD §7–§10 capabilities that used to be mis-routed (session 8). Before the fix every group question
+    # below was answered with the caller's own attendance/leave record, "Who is employee 1025?" returned the
+    # caller's own profile, and PF / hours-worked questions were classified UNKNOWN.
+    db.commit()
+    hr_emp = db.query(User).filter(User.email == "neha.hr@company.com").first().employee
+    caller_names = {"HR": hr_emp.name, "MGR": manager_emp.name, "EMP": aman.name}
+
+    def threshold_expect(metric: str, value: float, start=None, end=None, scope=None, unit_minutes=60) -> List[str]:
+        """Context lines a threshold question must contain: the count line + one line per employee (or 'No employees had')."""
+        key = {"overtime": "ot", "late": "late_days", "absent": "absent"}[metric]
+        limit = value * unit_minutes if metric == "overtime" else value
+        rows = [r for r in ranking(metric, start, end, scope) if r[key] > limit]
+        if not rows:
+            return ["No employees had more than"]
+        out = [f"{len(rows)} employee{'s' if len(rows) != 1 else ''}."]
+        for r in rows:
+            detail = (f"total overtime {fmt_minutes(r['ot'])}" if metric == "overtime"
+                      else f"{fmt_days(r['late_days'])} late ({r['late_min']} late minutes in total)")
+            out.append(f"- {r['name']} ({r['code']}, {r['dept']}): {detail}")
+        return out
+
+    def dept_overtime_expect(start=None, end=None) -> List[str]:
+        where = "WHERE a.attendance_date BETWEEN :s AND :t" if start else ""
+        rows = db.execute(text(
+            "SELECT e.department AS d, COALESCE(SUM(a.overtime_minutes), 0) AS ot, "
+            "COUNT(DISTINCT CASE WHEN a.overtime_minutes > 0 THEN e.id END) AS with_ot, COUNT(DISTINCT e.id) AS n "
+            f"FROM attendance a JOIN employees e ON e.id = a.employee_id {where} GROUP BY e.department"
+        ), {"s": start, "t": end}).all()
+        lines = [f"- {r.d}: total overtime {fmt_minutes(int(r.ot))}; {int(r.with_ot)} of {int(r.n)} employees"
+                 for r in rows]
+        return lines + [f"Total across these departments: {fmt_minutes(sum(int(r.ot) for r in rows))}."]
+
+    def on_leave_today_expect() -> List[str]:
+        rows = db.execute(text(
+            "SELECT e.name FROM leaves l JOIN employees e ON e.id = l.employee_id "
+            "WHERE l.status = 'approved' AND l.from_date <= :d AND l.to_date >= :d"
+        ), {"d": date.today()}).all()
+        if not rows:
+            return ["No employees are on approved leave today"]
+        return [f"{len(rows)} employee{'s' if len(rows) != 1 else ''}."] + [r.name for r in rows]
+
+    def hours_and_percentage(emp_id: int, start: date, end: date) -> List[str]:
+        r = sql_one(
+            "SELECT COALESCE(SUM(working_minutes), 0) AS wm, COUNT(*) AS total, SUM(status = 'present') AS p, "
+            "SUM(status = 'half_day') AS h, SUM(status IN ('weekend', 'holiday')) AS off_days "
+            "FROM attendance WHERE employee_id = :e AND attendance_date BETWEEN :s AND :t", e=emp_id, s=start, t=end,
+        )
+        wm, working = int(r.wm or 0), int(r.total or 0) - int(r.off_days or 0)
+        attended = int(r.p or 0) + 0.5 * int(r.h or 0)
+        attended_text = str(int(attended)) if attended == int(attended) else str(attended)
+        return [f"Total Hours Worked: {wm // 60} hours {wm % 60} minutes",
+                f"Attendance Percentage: {round(attended / working * 100, 1)}% ({attended_text} of {working} "
+                "recorded working days attended"]
+
+    today_d = date.today()
+    monday = today_d - timedelta(days=today_d.weekday())
+    last_week = (monday - timedelta(days=7), monday - timedelta(days=1))
+    latest_pay = sql_one("SELECT year, month FROM salary ORDER BY year DESC, month DESC LIMIT 1")
+    latest_ot = sql_one("SELECT SUM(overtime_amount) AS ot FROM salary WHERE year = :y AND month = :m",
+                        y=latest_pay.year, m=latest_pay.month)
+    aman_pf = sql_one("SELECT SUM(pf) AS pf, COUNT(*) AS n FROM salary WHERE employee_id = :e", e=aman.id)
+    aman_sep_ot = sql_one("SELECT overtime_amount FROM salary WHERE employee_id = :e AND year = 2024 AND month = 9",
+                          e=aman.id)
+    aman_digits = int("".join(ch for ch in aman.employee_code if ch.isdigit()))
+    rahul_digits = int("".join(ch for ch in rahul.employee_code if ch.isdigit()))
+    codes_in_use = {int("".join(ch for ch in c if ch.isdigit()) or 0)
+                    for (c,) in db.execute(text("SELECT employee_code FROM employees")).all()}
+    this_label = month_label(*expected_this_month())
+
+    run_section("[F] PRD capabilities: thresholds, groups, PF / OT amount, hours, %, last week, employee ID", [
+        {"id": "F01", "as": HR, "q": "Show employees with more than 5 late entries.", "intent": "ATTENDANCE",
+         "llm": True, "prompt_has": threshold_expect("late", 5) + ["company-wide"],
+         "prompt_lacks": ["Attendance summary for"]},
+        {"id": "F02", "as": HR, "q": "Show employees with more than 2 late entries in August 2024.",
+         "intent": "ATTENDANCE", "prompt_has": threshold_expect("late", 2, *aug24) + ["August 2024"],
+         "prompt_lacks": ["Attendance summary for"]},
+        {"id": "F03", "as": HR, "q": "Show employees who were late more than 5 times this month.",
+         "intent": "ATTENDANCE", "prompt_has": threshold_expect("late", 5, *month_bounds(*expected_this_month()))
+         + [this_label], "prompt_lacks": ["Attendance summary for"]},
+        {"id": "F04", "as": HR, "q": "How many employees worked more than 10 hours overtime?", "intent": "ATTENDANCE",
+         "prompt_has": threshold_expect("overtime", 10) + ["more than 10 hours of overtime"],
+         "prompt_lacks": ["Attendance summary for"]},
+        {"id": "F05", "as": HR, "q": "How many employees worked more than 300 minutes of overtime in September 2024?",
+         "intent": "ATTENDANCE", "prompt_has": threshold_expect("overtime", 300, *sep24, unit_minutes=1)
+         + ["more than 300 minutes of overtime"]},
+        {"id": "F06", "as": HR, "q": "Show department-wise overtime.", "intent": "ATTENDANCE",
+         "confidence": "data_verified", "prompt_has": ["Overtime by department"] + dept_overtime_expect(),
+         "prompt_lacks": ["Attendance summary for"]},
+        {"id": "F07", "as": ADMIN, "q": "Show department-wise overtime for September 2024.", "intent": "ATTENDANCE",
+         "prompt_has": ["Overtime by department for September 2024"] + dept_overtime_expect(*sep24)},
+        {"id": "F08", "as": HR, "q": "How many employees are on leave today?", "intent": "LEAVE",
+         "source": "leave_database", "prompt_has": on_leave_today_expect() + [str(today_d)],
+         "prompt_lacks": ["Leave balance for"]},
+        {"id": "F09", "as": MGR, "q": "Which members of my team worked overtime last week?", "intent": "ATTENDANCE",
+         "prompt_has": [f"last week ({last_week[0]} to {last_week[1]})", "limited to you and your direct reports"]
+         + [line for line in threshold_expect("overtime", 0, *last_week, scope=manager_team)
+            if not line.startswith("No ")],
+         "prompt_lacks": ["Attendance summary for"] + [n for n in outside_team_names if n]},
+        {"id": "F10", "as": EMP, "q": "How much PF was deducted?", "intent": "SALARY", "source": "salary_database",
+         "prompt_has": [f"Salary records for {aman.name}", "PF: ₹", "no person was named"]
+         + ([f"PF ₹{float(aman_pf.pf):,.2f}"] if int(aman_pf.n) > 1 else [])},
+        {"id": "F11", "as": HR, "q": "What was the total overtime amount?", "intent": "SALARY",
+         "confidence": "data_verified",
+         "prompt_has": [f"Company Payroll Summary for {month_label(latest_pay.year, latest_pay.month)}",
+                        f"Total Overtime Paid: ₹{float(latest_ot.ot or 0):,.2f}"],
+         "prompt_lacks": ["Salary records for"]},
+        {"id": "F12", "as": EMP, "q": "What is my overtime amount for September 2024?", "intent": "SALARY",
+         "prompt_has": [f"Overtime Amount: ₹{float(aman_sep_ot.overtime_amount):,.2f}"] if aman_sep_ot
+         else ["No salary records found"]},
+        {"id": "F13", "as": HR, "q": "How many hours did Aman work in August 2024?", "intent": "ATTENDANCE",
+         "confidence": "data_verified", "prompt_has": [aman.name] + hours_and_percentage(aman.id, *aug24)[:1]},
+        {"id": "F14", "as": HR, "q": "What was Aman's attendance percentage in August 2024?", "intent": "ATTENDANCE",
+         "prompt_has": [aman.name] + hours_and_percentage(aman.id, *aug24)[1:]},
+        {"id": "F15", "as": HR, "q": "What was Aman’s attendance percentage?", "intent": "ATTENDANCE",
+         "prompt_has": [f"Attendance summary for {aman.name}", "Attendance Percentage:"],
+         "prompt_lacks": [f"Attendance summary for {hr_emp.name}"]},
+        {"id": "F16", "as": MGR, "q": "How many hours did I work last week?", "intent": "ATTENDANCE",
+         "prompt_has": [f"Attendance summary for {manager_emp.name}", f"last week ({last_week[0]} to {last_week[1]})"]},
+        {"id": "F17", "as": HR, "q": f"Who is employee {aman_digits}?", "intent": "EMPLOYEE",
+         "prompt_has": [f"Code: {aman.employee_code}", f"Name: {aman.name}"]},
+        {"id": "F18", "as": HR, "q": "Who is employee 1025?", "intent": "EMPLOYEE",
+         **({"confidence": "not_found", "prompt_has": ["No employee record found"],
+             "prompt_lacks": [f"Name: {hr_emp.name}", "Employee Profile"]} if 1025 not in codes_in_use else {})},
+        denied("F19", EMP, f"Who is employee {rahul_digits}?", "employee_database"),
+        {"id": "F20", "as": EMP, "q": "How many leaves did I take this month?", "intent": "LEAVE",
+         "prompt_has": [f"Leave taken in {month_label(today_d.year, today_d.month)}", f"Leave balance for {aman.name}"]},
+        {"id": "F21", "as": HR, "q": "Who came late the most this month?", "intent": "ATTENDANCE",
+         "prompt_has": [top_line("late", *month_bounds(*expected_this_month())), this_label]},
+    ])
+
+    # -----------------------------------------------------------------------
+    # [G] The caller's own record is never substituted for another person, an ID or a group (D-043)
+    run_section("[G] No caller substitution: ambiguous / group / other-person questions", [
+        {"id": "G01", "as": HR, "q": "How many days present in August 2024?", "intent": "ATTENDANCE",
+         "confidence": "clarification_needed", "llm": True, "prompt_has": ["does not say whose records"],
+         "prompt_lacks": ["Attendance summary for", "Present Days:"]},
+        {"id": "G02", "as": MGR, "q": "How much PF was deducted?", "intent": "SALARY",
+         "confidence": "clarification_needed", "prompt_lacks": ["Salary records for", "₹"]},
+        {"id": "G03", "as": HR, "q": "Show the attendance of the Engineering department.", "intent": "ATTENDANCE",
+         "confidence": "clarification_needed", "prompt_has": ["group of employees"],
+         "prompt_lacks": ["Attendance summary for", "Present Days:"]},
+        {"id": "G04", "as": HR, "q": "What is the salary of the Engineering department?", "intent": "SALARY",
+         "confidence": "clarification_needed", "prompt_lacks": ["₹", "Salary records for", "Company Payroll Summary"]},
+        denied("G05", MGR, "What is the salary of the Engineering department?", "salary_database"),
+        denied("G06", EMP, "Show employees with more than 5 late entries.", "attendance_database"),
+        denied("G07", EMP, "How many employees are on leave today?", "leave_database"),
+        denied("G08", EMP, "Show department-wise overtime.", "attendance_database"),
+        denied("G09", EMP, "Show the attendance of the Engineering department.", "attendance_database"),
+        # an employee's "total" question is company-level, not their own record
+        denied("G10", EMP, "What was the total overtime amount?", "salary_database"),
+        {"id": "G11", "as": HR, "q": "What was Rahul's total salary in 2024?", "intent": "SALARY",
+         "prompt_has": [f"Salary records for {rahul.name}"],
+         "prompt_lacks": ["Company Payroll Summary", f"Salary records for {hr_emp.name}"]},
+        {"id": "G12", "as": MGR, "q": "Who on my team was late the most?", "intent": "ATTENDANCE",
+         "prompt_has": ["limited to you and your direct reports"],
+         "prompt_lacks": [f"Attendance summary for {manager_emp.name}"] + [n for n in outside_team_names if n]},
+        {"id": "G13", "as": HR, "q": "Who worked overtime last week?", "intent": "ATTENDANCE",
+         "prompt_has": [f"last week ({last_week[0]} to {last_week[1]})", "company-wide"],
+         "prompt_lacks": [f"Attendance summary for {hr_emp.name}"]},
+    ])
+
+    # Direct router check: the target for these questions is never the caller
+    from app.ai.router import find_target_employee
+    db.commit()
+    for who, user_email, question in [
+        ("HR", "neha.hr@company.com", "Who is employee 1025?"),
+        ("HR", "neha.hr@company.com", "Show department-wise overtime."),
+        ("HR", "neha.hr@company.com", "How many employees are on leave today?"),
+        ("HR", "neha.hr@company.com", "How much PF was deducted?"),
+        ("MGR", "priya.mgr@company.com", "Which members of my team worked overtime last week?"),
+        ("EMP", "aman@company.com", "Show employees with more than 5 late entries."),
+        ("EMP", "aman@company.com", "What was the total overtime amount?"),
+    ]:
+        caller = db.query(User).filter(User.email == user_email).first()
+        target, _, _ = find_target_employee(db, question, caller)
+        chk(target is None or target.id != caller.employee_id,
+            f"G-target: [{who}] {question!r} -> not the caller's own record",
+            f"resolved to {target and target.name}")
+    target, is_other, note = find_target_employee(db, "How much PF was deducted?",
+                                                  db.query(User).filter(User.email == "aman@company.com").first())
+    chk(target is not None and target.id == aman.id and note and "no person was named" in note,
+        "G-target: [EMP] plain 'How much PF was deducted?' -> own record, with a note the answer must state",
+        f"target={target and target.name} note={note}")
 
     # -----------------------------------------------------------------------
     print("\n[E] RAG / document questions (11 checks)")
