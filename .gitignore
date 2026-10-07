@@ -12,3 +12,4 @@ documents/
 # Browser QA screenshots (scripts/ui_qa.py default output)
 qa_shots/
 frontend/.redesign/
+.history
