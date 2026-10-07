@@ -105,9 +105,12 @@ class ChatLogItem(ChatHistoryItem):
     error: Optional[str] = None
 
 
-def _confidence(source: str, denied: bool, context: str) -> str:
+def _confidence(source: str, denied: bool, context: str, answer: str = "") -> str:
     if denied:
         return "access_denied"
+    # The LLM may report that the retrieved context did not contain the answer (KI-035).
+    if answer.strip().lower().startswith(NO_DOCUMENT_ANSWER.lower().rstrip(".")):
+        return "not_found"
     if source == "document_rag":
         return "document_grounded"
     if source == "policies.json":
@@ -242,7 +245,7 @@ def chat_endpoint(
         intent=intent_value,
         answer=answer,
         source=display_source,
-        confidence=_confidence(data_source, denied, context_str),
+        confidence=_confidence(data_source, denied, context_str, answer),
         page=page,
         sources=sources,
     )
