@@ -312,9 +312,12 @@ sequenceDiagram
         end
         alt denied by RBAC
             Note over C: answer = denial text, LLM not called
+        else clarification / employee not found (D-044)
+            Note over C: answer = the router's own text, LLM not called
         else allowed
             C->>L: system prompt + verified context + question
             L-->>C: answer text (or LLMError -> fixed message)
+            C->>C: grounding post-check: numbers not in the context -> confidence unverified
         end
     end
     C->>D: INSERT chat_logs (question, intent, source, answer, latency, error)
@@ -322,7 +325,8 @@ sequenceDiagram
 ```
 
 Key properties (PRD §16, §18–20, §28): the LLM only **phrases** a context that Python already computed and
-permission-checked; refusals never reach the LLM; every request — including refusals and LLM failures — is logged.
+permission-checked; refusals, clarifications and "not found" answers never reach the LLM; every number in an LLM answer
+is checked against the context; every request — including refusals and LLM failures — is logged.
 
 ---
 
@@ -496,7 +500,7 @@ cd frontend; bun install; bun dev                  # http://localhost:3000
 | Service | Image | Published | Notes |
 |---|---|---|---|
 | `db` | `mysql:8.4`, utf8mb4 | no | volume `mysql_data`; healthcheck `mysqladmin ping` |
-| `backend` | `Dockerfile` (python:3.14-slim, non-root uid 10001) | no | `docker/backend-entrypoint.sh`: wait for DB -> `alembic upgrade head` -> seed only if `SEED_DEMO_DATA=true` **and** `employees`+`users` are empty -> `uvicorn` (1 worker, no reload). Uploads in volume `documents_data`. `TRUSTED_PROXY_IPS` = the frontend's fixed IP. |
+| `backend` | `Dockerfile` (python:3.14-slim, non-root uid 10001) | no | `docker/backend-entrypoint.sh`: wait for DB -> `alembic upgrade head` -> seed only if `SEED_DEMO_DATA=true` **and** `employees`+`users` are empty -> `uvicorn` (1 worker, no reload). Uploads in volume `documents_data`. `TRUSTED_PROXY_IPS` = the frontend's fixed IP. Healthcheck `GET /health/ready` (503 while MySQL is unreachable), so the frontend starts only when the API can serve data. |
 | `frontend` | `frontend/Dockerfile` (oven/bun 1.4, non-root) | `FRONTEND_PORT` (3000) | `NODE_ENV=production bun src/index.ts`, `BACKEND_URL=http://backend:8000`, fixed IP `172.28.0.10` on `hr_net` |
 
 Only the frontend is reachable from the host; the browser reaches the API through `/api`. Step-by-step instructions,

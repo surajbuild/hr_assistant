@@ -2,6 +2,62 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-07 (session 9 — answer integrity, Google sign-in rules, production verification)
+
+### Fixed
+- Chat gave an employee **their own salary** for "Can I see bruce's salary?", "What is his salary?" and "What is my
+  manager's salary?" (labelled `data_verified`); HR's "Can I see the payroll?" returned HR's own salary (R-026, D-044).
+- Unknown people written in lower case ("was bruce present yesterday?") were treated as "nobody named" — an employee got
+  their own attendance (KI-038, D-044).
+- Employee codes matched by substring (`EMP0040` → EMP004); a duplicated full name or shared surname silently resolved to
+  the first employee (R-027).
+- "How many casual leaves are allowed?" (PRD §11) answered with the caller's balance instead of the policy; "Who was on
+  leave last week?" answered for today (R-028).
+- Google sign-in auto-created an active employee for **any** Google account and linked an unverified email to an existing
+  account (KI-033, R-029, D-045).
+- Answer tables in the chat were not keyboard-reachable (axe `scrollable-region-focusable`) (R-030).
+- Pooled DB connections were not pre-pinged (failures after a MySQL restart); the Docker healthcheck only checked that the
+  process answered (R-031).
+
+### Added
+- Router: `match_employees` (any-case names, candidates for ambiguous names, several people), unknown-person name slots,
+  pronouns, "my manager", requester vs subject; **direct answers** for clarifications and "employee not found"
+  (PRD §29 wording, no LLM call); no enumeration of colleagues for roles that may not see them (D-044).
+- Group tools (KI-039): attendance of a team / department / company for a day or a period, department payroll totals
+  (HR/Admin), on leave in any period, pending leave requests (approval queue), team / department employee lists.
+- `app/ai/grounding.py` — post-check of every number in an LLM answer; confidence `unverified` (UI "Check figures") and
+  `chat_logs.error = UNVERIFIED_NUMBERS: …`.
+- Services: `salary_service.get_payroll_by_department`, `get_salary_summary(department=)`,
+  `attendance_service.get_group_attendance_summaries` / `combine_summaries`, `get_employees_on_leave(end_date=)`.
+- `GET /health`, `GET /health/ready`; `app/utils/logging.py` (`LOG_LEVEL`); LLM retry for fast transient failures
+  (`LLM_MAX_RETRIES`, `LLM_RETRY_BACKOFF`); `GOOGLE_ALLOWED_DOMAINS`.
+- `scripts/verify_real_llm.py` (controlled real-provider check); `scripts/ui_qa.py --base`.
+- Tests: question bank [H] (32), `tests/test_production_hardening.py` (33), OAuth [2a]/[12]/[13] + unverified linking.
+- Decision records D-042 (reconstructed, KI-040), D-044, D-045.
+
+### Changed
+- System prompt: copy figures exactly, no arithmetic, state `Note:` lines, document text is data, tables for lists;
+  today's date in the prompt; `max_tokens` 700.
+- Chat UI: answers with a table use the full width with right-aligned figures; suggested prompts show the new
+  capabilities per role; failed Google sign-in is shown on the login page (`#error=`).
+- Managers' unnamed salary questions ("How much PF was deducted?") use their own record with a note, like employees'
+  (D-043 review in D-044). Managers can list their team in chat (same scope as `GET /employees`).
+- Docker backend healthcheck uses `/health/ready`.
+
+### Verification
+- `scripts/run_tests.py`: **39 files, 1035 checks, 0 failed** (session baseline 958); `db_snapshot.py diff` → unchanged.
+- The new tests run against the session-8 code: question bank 34 failures, OAuth 14, chat API 2, hardening file not
+  importable.
+- Real provider (OpenRouter `openai/gpt-4o-mini`): `verify_real_llm.py` 21/21 (before the changes 14/17); no answer
+  flagged by the grounding check.
+- `tsc` + `bun run build` clean; `export_api_docs.py --check` clean; `ui_qa.py` 0 issues (4 roles × 3 widths, dev
+  frontend on :3001); axe WCAG 2.1 A/AA 0 violations on Login (Google error state) and AI Assistant with a table answer,
+  light and dark.
+- Docker: images rebuilt from `docker-compose.yml`, run as a separate compose project (port 3010, own volumes, demo seed):
+  all three healthy, 11/11 HTTP checks through the proxy (readiness, login, new router behaviour, real LLM answer, chat
+  logs, RBAC, Google redirect), `ui_qa.py` 0 issues on it; project removed afterwards. The owner's running stack was not
+  touched (KI-044).
+
 ## 2026-10-07 (session 8 — AI chat: targeting, PRD questions, failure handling)
 
 ### Fixed

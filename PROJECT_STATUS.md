@@ -1,7 +1,9 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-07, session 8** (AI chat targeting / PRD questions / failure handling, D-043). Session 7 (cleanups: user service, chat confidence post-check, frontend code-splitting,
-pagination for `/users` `/leaves` `/documents`, `axios` removed). Earlier: session 6 Docker bring-up, session 5 hardening/redesign.
+Last updated: **2026-10-07, session 9** (chat answer integrity D-044, Google sign-in rules D-045, health/readiness, real-LLM
+and Docker verification). Session 8: AI chat targeting / PRD questions / failure handling (D-043). Session 7 (cleanups: user
+service, chat confidence post-check, frontend code-splitting, pagination for `/users` `/leaves` `/documents`, `axios` removed,
+D-042). Earlier: session 6 Docker bring-up, session 5 hardening/redesign.
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
 
@@ -14,7 +16,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Project setup (FastAPI, MySQL, Alembic) | ✅ | Alembic head `f6a7b8c9d0e1` (holidays + attendance_corrections) |
 | Authentication (email/password, JWT) | ✅ | bcrypt, generic errors, inactive → 403; secrets ≥ 32 bytes enforced at startup (D-031) |
 | Rate limiting (`/auth/login`, `/chat`) | ✅ | In-memory, 429 + `Retry-After` (D-031; one worker, KI-031) |
-| Google OAuth | ⚠️ | Backend + tests; starts through the `/api` proxy, redirect URI `…:3000/api/auth/google/callback` (D-041); real Google round-trip not tried (KI-004); auto-provisioning needs an owner decision (KI-033) |
+| Google OAuth | ⚠️ | Backend + tests; starts through the `/api` proxy, redirect URI `…:3000/api/auth/google/callback` (D-041); invite-only by default, verified email required, `GOOGLE_ALLOWED_DOMAINS` opt-in, errors shown on the login page (D-045); 302 to Google verified in Docker; **real Google consent round-trip not tried** (KI-004 — needs a person) |
 | RBAC + manager team scope | ✅ | `get_scope_employee_ids`; manager = self + direct reports (D-010) |
 | Self-approval of leave | ✅ | Blocked for every role incl. HR/Admin — product-owner decision D-022; UI explains it |
 | Employee management (CRUD, soft delete) | ✅ | + `monthly_gross_salary` (confidential, D-021) |
@@ -28,8 +30,9 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | "Mark as paid" action | ✅ | `POST /salary/mark-paid`, irreversible, locks the month (D-036) |
 | List pagination | ✅ | `/employees`, `/attendance/records`, `/chat/logs` — `limit`/`offset` + `X-Total-Count` (D-035); browser-verified |
 | Document upload + RAG indexing | ✅ | PDF (page-aware), DOCX, TXT; versioning; archive |
-| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent; managers team-scoped, D-032), thresholds, department-wise overtime, on leave today, employee-ID lookup, PF / overtime amount, hours worked, attendance %, last week (D-043), department headcount, company payroll summary, holidays, "this month"/month-only periods (D-029, D-030); profile lookups follow REST (D-039); **never substitutes the caller's record** (D-043) |
-| PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 119 checks: [A] 23 · [B] 11 · [C] 18 · [D] 14 · [F] 21 PRD capability · [G] 13 + 8 no-substitution · [E] 11 RAG |
+| AI chat: intent router + DB tools | ✅ | Leave balance; rankings (overtime/late/absent; managers team-scoped, D-032), thresholds, department-wise overtime, on leave (any period), employee-ID lookup, PF / overtime amount, hours worked, attendance %, last week (D-043), team/department attendance, department payroll, pending leave requests, team lists (D-044), department headcount, company payroll summary, holidays, "this month"/month-only periods (D-029, D-030); profile lookups follow REST (D-039); **never substitutes the caller's record** — names in any case, ambiguous names never guessed, pronouns, "my manager" (D-043, D-044) |
+| AI chat: answer integrity | ✅ | Clarifications / not-found answered without the LLM; grounding post-check of every number (`unverified` + audit flag); prompt forbids arithmetic, treats documents as data (D-044). **Real provider verified** 21/21 (`scripts/verify_real_llm.py`) |
+| PRD §30 question bank | ✅ | `tests/test_question_bank.py` — 151 checks: [A] 23 · [B] 11 · [C] 18 · [D] 14 · [F] 21 PRD capability · [G] 13 + 8 no-substitution · [H] 32 session 9 · [E] 11 RAG |
 | AI chat: policy Q&A via RAG with sources | ✅ | D-009 |
 | Prompt-injection protection | ✅ | D-011 |
 | Chat logging + history + admin audit log | ✅ | Retrieval/LLM failures logged, confidence `unavailable` (D-043) |
@@ -37,10 +40,10 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
 | Frontend: 13 pages | ✅ | **Redesign complete** (D-026, D-037, D-040): all 13 pages on design system v2, light + dark; legacy bridge deleted; `ui_qa.py` 0 issues, axe 0 violations in both themes |
-| Automated tests | ✅ | 38 files, 958 checks, all passing (2026-10-07 session 8); dev DB unchanged by a run (D-023) |
+| Automated tests | ✅ | 39 files, 1035 checks, all passing (2026-10-07 session 9); dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
 | README / docs | ✅ | + `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md` (PRD §33) |
-| Deployment | 🟡 | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; stack built and verified healthy in session 6 (see CHANGELOG) |
+| Deployment | ✅ | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; images rebuilt in session 9 and verified in a separate compose project (healthy via `/health/ready`, HTTP + browser checks, real LLM). The owner's running stack still uses the older containers until `docker compose up -d` (KI-044) |
 | Out-of-PRD reference modules | 🔴 | P3 by decision D-002 |
 
 ## 2. PRD acceptance criteria (§36)
@@ -55,7 +58,7 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Leave questions work | ✅ (balance answers fixed in session 2) |
 | Salary questions respect permissions | ✅ |
 | Overtime calculations are correct | ✅ |
-| AI chatbot works | ✅ (verified live in the browser) |
+| AI chatbot works | ✅ (verified live in the browser; real provider 21/21 in session 9) |
 | RAG works | ✅ |
 | PDF/DOCX documents can be indexed | ✅ (PDF with page numbers, DOCX and TXT tested end to end in `test_question_bank.py`) |
 | AI provides document/source references | ✅ |
@@ -66,9 +69,18 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Dashboard works | ✅ (browser-verified with live data) |
 | Automated tests exist | ✅ |
 | README is complete | ✅ |
-| Git history is maintained | 🟡 Sessions 1–4 are committed on `feature/hr-assistant` (HEAD `7b3e79e`; `main` is far behind). **All session-5 work is uncommitted** (≈ 46 modified + new files) — commit when the product owner asks |
+| Git history is maintained | ✅ Sessions 1–9 are committed on `feature/hr-assistant` (session 8 and 9 committed in session 9, not pushed) |
 
 ## 3. Test status
+
+Session 9 (2026-10-07): baseline **958** checks (38 files, all passing, DB unchanged — re-verified at session start) → after
+the change **1035 passed, 0 failed** (39 files); `db_snapshot.py diff` vs the session-start snapshot: "Database unchanged".
+The new/changed checks run against the session-8 code: question bank 34 failures, OAuth 14, chat API 2, hardening file not
+importable. `tsc` ✅ · `bun run build` ✅ · `export_api_docs.py --check` ✅ · `ui_qa.py` 0 issues (dev :3001, and hr/employee
+on the Docker image) · axe 0 violations (Login with Google error, AI Assistant with a table answer; light + dark).
+**Real provider:** `scripts/verify_real_llm.py` 21/21 (OpenRouter `openai/gpt-4o-mini`; before the changes 14/17).
+**Docker:** rebuilt images verified in a separate compose project (11/11 HTTP checks, browser QA 0 issues), then removed.
+**Not verified:** real Google consent round-trip (KI-004); the owner's running Docker stack was deliberately not recreated.
 
 Session 8 (2026-10-07): baseline **906** checks passing → after the change **958 passed, 0 failed** (38 files); `db_snapshot.py`
 diff vs the session-start snapshot: "Database unchanged". New question-bank sections [F]/[G] fail 34× (+ a crash) on the old router.
@@ -123,8 +135,8 @@ Frontend: untouched this session (last: `bunx tsc --noEmit` ✅, `bun run build`
 
 ## 5. Where we are / what's next
 
-**Current position:** All PRD requirements and all planned P1/P2 items are implemented and verified; the redesign is
-complete and the Docker stack has been brought up (session 6). Sessions 5–6 are committed; **session-7 cleanups are uncommitted**.
+**Current position:** All PRD requirements and all planned P1 items are implemented and verified, including the real-LLM
+path and the Docker images (session 9). Sessions 1–9 are committed on `feature/hr-assistant` (not pushed).
 
 **Session 7 (2026-10-07):** KI-034, KI-035, KI-037 fixed; KI-006 fixed (route-level code-splitting, D-042); KI-007 API pagination
 for `/users`, `/leaves`, `/documents`. Verified: `run_tests.py` 906/906, DB unchanged, `ui_qa.py` 0 issues, `tsc` + build clean.
@@ -135,12 +147,17 @@ not rebuilt with the new frontend build.
 overtime, on leave today, last week, PF, overtime amount, hours, attendance %, employee ID) answered; chat failures logged and
 labelled `unavailable`. Uncommitted.
 
+**Session 9 (2026-10-07):** chat answer integrity (D-044: any-case names, ambiguous names never guessed, pronouns, "my
+manager", requester vs subject, direct answers, grounding post-check, group tools), Google sign-in rules (D-045), health /
+readiness + `pool_pre_ping` + logging, D-042 written, real-provider and Docker verification. Committed (not pushed).
+
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
-1. **Commit** the session-7 and session-8 work (when the product owner asks).
-2. Owner decision on Google sign-in auto-provisioning (KI-033: domain allow-list / `email_verified`).
-3. Use the new pagination in the Leave / Documents / Users UI tables; `/salary` pagination.
-4. Rebuild the Docker images (`docker compose up -d --build`) to ship the split frontend build and the session-8 chat changes.
-5. Owner check of D-043's one judgment call (employees' unnamed questions answered for themselves with a note) and KI-038/KI-039/KI-040.
+1. Owner: `docker compose up -d` to run the rebuilt images in the existing stack (KI-044); push when ready.
+2. Owner: try Google sign-in with a real account (redirect URI registered in Google Cloud Console; KI-004); set
+   `GOOGLE_ALLOWED_DOMAINS` only if self-registration for a company domain is wanted (D-045).
+3. `chat_logs.confidence` migration so reloaded history shows labels (KI-041); group leave-usage tool (KI-039 rest).
+4. Use the new pagination in the Leave / Documents / Users UI tables; `/salary` pagination.
+5. LLM-assisted intent fallback and multi-turn follow-ups (P2, KI-008).
 
 ## 6. History
 
@@ -158,6 +175,8 @@ labelled `unavailable`. Uncommitted.
   (D-038); chat profile lookups match REST (D-039); Docker files; `docs/` (PRD §33); redesign Part 2 of all 10 pages (D-037).
   A power cut interrupted the final steps; they were finished afterwards: legacy bridge deleted, success-button contrast fix,
   dark/light axe pass, pagination browser check, handoff docs (D-040); 882 checks.
+- **2026-10-07 sessions 7–9:** cleanups + D-042 (7); chat targeting / PRD questions / failure handling, D-043 (8); answer
+  integrity, group tools, Google sign-in rules, health/readiness, real-LLM + Docker verification, D-044/D-045 (9); 1035 checks.
 - **2026-10-05 session 2:** Sanity check of the uncommitted tree (no dangling `retrievers` imports); stale "Build Failed"
   root-caused (KI-005); full browser QA with 9 fixes; test isolation (D-023); current-month demo data (D-024); payroll
   engine + pro-rated OT report (D-021); self-approval rule confirmed (D-022); 692 checks.
