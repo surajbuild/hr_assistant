@@ -17,7 +17,7 @@ Framework-free: raises domain exceptions, never HTTPException.
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -190,11 +190,22 @@ def upload_document(
 # Listing / Archiving
 # ---------------------------------------------------------------------------
 
-def list_documents(db: Session, include_archived: bool = False) -> List[Document]:
+def list_documents(
+    db: Session,
+    include_archived: bool = False,
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> Tuple[List[Document], int]:
+    """Return (page of documents newest first, total matching documents)."""
     query = db.query(Document)
     if not include_archived:
         query = query.filter(Document.status != DocumentStatus.ARCHIVED.value)
-    return query.order_by(Document.upload_date.desc(), Document.id.desc()).all()
+    total = query.count()
+    query = query.order_by(Document.upload_date.desc(), Document.id.desc()).offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all(), total
 
 
 def get_document(db: Session, document_id: int) -> Document:

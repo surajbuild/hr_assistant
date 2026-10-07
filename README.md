@@ -215,7 +215,7 @@ app/
     chat.py              /chat, /chat/history, /chat/logs
     dashboard.py         /dashboard/summary, /dashboard/me
     reports.py           /reports/attendance|overtime|leave (.xlsx)
-    users.py             /users (admin)
+    users.py             /users (admin; limit/offset, X-Total-Count)
   services/              Business logic & calculations (framework-free; reused by the AI)
   ai/                    router.py (intent + controlled retrieval), guardrails.py, prompts.py, llm.py
   rag/                   document_loader.py, chunker.py, embeddings.py, retriever.py
@@ -316,7 +316,8 @@ python scripts/db_snapshot.py isolate              # which test file (if any) ch
 The LLM is always mocked.
 Key suites: `test_question_bank.py` (**PRD §30 question bank**: 23 normal / 11 incorrect / 14 security / 14 calculation
 questions + 11 RAG checks through `POST /chat`, expected numbers computed from MySQL in the test),
-`test_holidays_corrections.py` (holidays, attendance corrections, mark-paid, pagination, 73), `test_security_hardening.py`
+`test_holidays_corrections.py` (holidays, attendance corrections, mark-paid, pagination, 73),
+`test_pagination_cleanups.py` (`/users` `/leaves` `/documents` pagination, user service, chat confidence, 24), `test_security_hardening.py`
 (secrets + rate limits, 32),
 `test_hrms_endpoints.py` (HRMS APIs, 88 checks), `test_payroll.py` (payroll engine, 36), `test_rag.py` (RAG + guardrails, 38),
 `test_rbac_matrix.py` (permissions, 77), `test_chat_api.py`, `test_ai_router.py`, `test_reports_api.py`.

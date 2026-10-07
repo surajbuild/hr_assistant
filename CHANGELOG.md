@@ -2,6 +2,29 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-07 (session 7 — cleanups)
+
+### Added
+- `app/services/user_service.py` (`list_users`, `update_user`, `serialize_user`; domain errors `UserNotFoundError`,
+  `SelfModificationError`) — `app/api/users.py` is now HTTP-only (KI-034).
+- `limit` / `offset` + `X-Total-Count` on `GET /users`, `GET /leaves`, `GET /documents` (D-042, KI-007). Parameters are optional,
+  responses stay plain arrays, so existing clients are unaffected.
+- `tests/test_pagination_cleanups.py` (24 checks, read-only): pagination, 401/403/422, manager scope, service errors, confidence.
+
+### Changed
+- Chat `confidence` is `not_found` when the LLM answers "I could not find this information…" (was `document_grounded`) (KI-035).
+- Frontend route pages are `React.lazy` chunks behind `Suspense`; `build.ts` sets `splitting: true` (KI-006, D-042). Largest chunk
+  ≈ 407 KB (was one ≈ 780 KB bundle); 53 JS chunks.
+- `scripts/ui_qa.py` waits for the page `<h1>` after login (lazy pages mount after `networkidle`).
+- `docs/API.md` regenerated.
+
+### Removed
+- Unused `axios` dependency (KI-037).
+
+### Verification
+- `scripts/run_tests.py`: 38 files, 906 checks, 0 failed; `db_snapshot.py diff` → database unchanged.
+- `ui_qa.py` 0 issues; `bunx tsc --noEmit` and `bun run build` clean.
+
 ## 2026-10-06 (session 6 — Docker bring-up)
 
 ### Changed

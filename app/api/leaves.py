@@ -18,7 +18,7 @@ GET /leaves/{employee_id}       — Get leave records for a specific employee (H
 from datetime import date, datetime
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,7 @@ from app.services.leave_service import (
     LeaveNotFoundError,
     LeaveStatusError,
 )
+from app.utils.pagination import set_total_count
 from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/leaves", tags=["Leaves"])
@@ -286,16 +287,27 @@ class LeaveListItem(BaseModel):
     response_model=List[LeaveListItem],
     status_code=status.HTTP_200_OK,
     summary="List Leave Requests",
-    description="HR/Admin see all requests; managers see their team's requests.",
+    description=(
+        "HR/Admin see all requests; managers see their team's requests. "
+        "Optional `limit` / `offset` pagination; the total is in the `X-Total-Count` header."
+    ),
 )
 def list_leaves(
+    response: Response,
     status_filter: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(None, alias="status"),
     employee_id: Optional[int] = None,
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_role("hr", "admin", "manager")),
     db: Session = Depends(get_db),
 ):
     scope = employee_service.get_scope_employee_ids(db, current_user)
-    return leave_service.list_leaves(db, scope_ids=scope, status=status_filter, employee_id=employee_id)
+    page = leave_service.list_leaves(
+        db, scope_ids=scope, status=status_filter, employee_id=employee_id,
+        limit=limit, offset=offset, with_total=True,
+    )
+    set_total_count(response, page["total"])
+    return page["items"]
 
 
 # ---------------------------------------------------------------------------

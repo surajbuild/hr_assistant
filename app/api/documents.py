@@ -15,7 +15,7 @@ DELETE /documents/{id}            — Archive: remove from the AI index (HR / Ad
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from app.database.connection import get_db
 from app.database.models import DocumentStatus, User
 from app.services import document_service
 from app.services.document_service import DocumentNotFoundError, DocumentValidationError
+from app.utils.pagination import set_total_count
 from app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -81,17 +82,22 @@ async def upload_document(
     response_model=List[DocumentResponse],
     status_code=status.HTTP_200_OK,
     summary="List Documents",
+    description="Optional `limit` / `offset` pagination; the total is in the `X-Total-Count` header.",
 )
 def list_documents(
+    response: Response,
     include_archived: bool = False,
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     show_archived = include_archived and current_user.role in ("hr", "admin")
-    return [
-        document_service.serialize_document(d)
-        for d in document_service.list_documents(db, include_archived=show_archived)
-    ]
+    documents, total = document_service.list_documents(
+        db, include_archived=show_archived, limit=limit, offset=offset
+    )
+    set_total_count(response, total)
+    return [document_service.serialize_document(d) for d in documents]
 
 
 @router.get(

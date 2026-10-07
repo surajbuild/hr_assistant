@@ -396,12 +396,15 @@
 
 ### GET /documents
 
-**List Documents**
+**List Documents** — Optional `limit` / `offset` pagination; the total is in the `X-Total-Count` header.
 
 - **Access:** Any authenticated user
+- **Paginated (D-035):** `limit` / `offset`, total in the `X-Total-Count` header
 - **Rules:** Active documents for everyone; `include_archived=true` is honoured only for HR/Admin.
 - **Parameters:**
   - `include_archived` (query, boolean, optional) — default `False`
+  - `limit` (query, integer \| null, optional) — >= 1, <= 500
+  - `offset` (query, integer, optional) — >= 0, default `0`
 - **Response 200:** array of `DocumentResponse`: `id`, `name`, `file_name`, `file_type`, `version`, `status`, `uploaded_by`, `uploaded_by_name`, `upload_date`, `chunk_count`, `error_message`
 - **Errors:** 401 Unauthorized, 403 Forbidden, 422 Unprocessable Entity
 
@@ -590,12 +593,15 @@
 
 ### GET /leaves
 
-**List Leave Requests** — HR/Admin see all requests; managers see their team's requests.
+**List Leave Requests** — HR/Admin see all requests; managers see their team's requests. Optional `limit` / `offset` pagination; the total is in the `X-Total-Count` header.
 
 - **Access:** `manager`, `hr`, `admin`
+- **Paginated (D-035):** `limit` / `offset`, total in the `X-Total-Count` header
 - **Rules:** HR/Admin -> all requests; manager -> self + direct reports (includes the manager's own, KI-021).
 - **Parameters:**
   - `employee_id` (query, integer \| null, optional)
+  - `limit` (query, integer \| null, optional) — >= 1, <= 500
+  - `offset` (query, integer, optional) — >= 0, default `0`
   - `status` (query, "pending" \| "approved" \| "rejected" \| "cancelled" \| null, optional)
 - **Response 200:** array of `LeaveListItem`: `id`, `employee_id`, `employee_name`, `employee_code`, `department`, `leave_type`, `from_date`, `to_date`, `days`, `status`, `reason`, `applied_at`
 - **Errors:** 401 Unauthorized, 403 Forbidden, 422 Unprocessable Entity
@@ -793,9 +799,13 @@
 **List Users**
 
 - **Access:** `admin`
+- **Paginated (D-035):** `limit` / `offset`, total in the `X-Total-Count` header
 - **Rules:** All login accounts with linked employee.
+- **Parameters:**
+  - `limit` (query, integer \| null, optional) — >= 1, <= 500
+  - `offset` (query, integer, optional) — >= 0, default `0`
 - **Response 200:** array of `UserResponse`: `id`, `email`, `role`, `status`, `employee_id`, `employee_name`, `employee_code`, `has_password`, `has_google`, `created_at`
-- **Errors:** 401 Unauthorized, 403 Forbidden
+- **Errors:** 401 Unauthorized, 403 Forbidden, 422 Unprocessable Entity
 
 ### PATCH /users/{user_id}
 

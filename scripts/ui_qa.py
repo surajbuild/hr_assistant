@@ -120,6 +120,7 @@ def run(roles, widths, out: Path) -> int:
                 page.click("button[type=submit]")
                 page.wait_for_url("**/dashboard", timeout=15000)
                 page.wait_for_load_state("networkidle")
+                page.wait_for_selector("h1", timeout=15000)  # route pages are lazy-loaded (KI-006)
 
                 # --- layout invariants
                 layout = page.evaluate(

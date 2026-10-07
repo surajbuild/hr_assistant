@@ -2,7 +2,7 @@
  * Root component: providers + client-side routes with auth/role guards.
  * Unauthenticated → /login · role not allowed → /dashboard · "/" → /dashboard.
  */
-import { Fragment, useEffect, type ReactNode } from "react";
+import { Fragment, Suspense, lazy, useEffect, type ReactNode } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { EmptyState, LoadingState } from "@/components/States";
 import { ToastProvider } from "@/components/Toast";
@@ -12,21 +12,27 @@ import { ThemeProvider } from "@/lib/theme";
 import { ALL_ROLES, HR_ROLES, STAFF_ROLES } from "@/lib/nav";
 import { matchPath, navigate, useRoute } from "@/lib/router";
 import type { Role } from "@/lib/types";
-import { AttendancePage } from "@/pages/AttendancePage";
-import { ChatPage } from "@/pages/ChatPage";
-import { DashboardPage } from "@/pages/DashboardPage";
-import { DepartmentsPage } from "@/pages/DepartmentsPage";
-import { DocumentsPage } from "@/pages/DocumentsPage";
-import { EmployeeDetailPage } from "@/pages/EmployeeDetailPage";
-import { EmployeeFormPage } from "@/pages/EmployeeFormPage";
-import { EmployeesPage } from "@/pages/EmployeesPage";
-import { LeavePage } from "@/pages/LeavePage";
-import { LoginPage } from "@/pages/LoginPage";
-import { PayrollPage } from "@/pages/PayrollPage";
-import { ReportsPage } from "@/pages/ReportsPage";
-import { SettingsPage } from "@/pages/SettingsPage";
 import { Compass } from "lucide-react";
 import "./index.css";
+
+// Route pages are code-split (KI-006): each page is fetched on first navigation.
+const AttendancePage = lazy(() => import("@/pages/AttendancePage").then((m) => ({ default: m.AttendancePage })));
+const ChatPage = lazy(() => import("@/pages/ChatPage").then((m) => ({ default: m.ChatPage })));
+const DashboardPage = lazy(() => import("@/pages/DashboardPage").then((m) => ({ default: m.DashboardPage })));
+const DepartmentsPage = lazy(() => import("@/pages/DepartmentsPage").then((m) => ({ default: m.DepartmentsPage })));
+const DocumentsPage = lazy(() => import("@/pages/DocumentsPage").then((m) => ({ default: m.DocumentsPage })));
+const EmployeeDetailPage = lazy(() => import("@/pages/EmployeeDetailPage").then((m) => ({ default: m.EmployeeDetailPage })));
+const EmployeeFormPage = lazy(() => import("@/pages/EmployeeFormPage").then((m) => ({ default: m.EmployeeFormPage })));
+const EmployeesPage = lazy(() => import("@/pages/EmployeesPage").then((m) => ({ default: m.EmployeesPage })));
+const LeavePage = lazy(() => import("@/pages/LeavePage").then((m) => ({ default: m.LeavePage })));
+const LoginPage = lazy(() => import("@/pages/LoginPage").then((m) => ({ default: m.LoginPage })));
+const PayrollPage = lazy(() => import("@/pages/PayrollPage").then((m) => ({ default: m.PayrollPage })));
+const ReportsPage = lazy(() => import("@/pages/ReportsPage").then((m) => ({ default: m.ReportsPage })));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+
+function PageFallback() {
+  return <LoadingState label="Loading..." className="w-full" />;
+}
 
 function Redirect({ to }: { to: string }) {
   useEffect(() => {
@@ -78,7 +84,11 @@ function Routes() {
 
   if (pathname === "/login") {
     if (token && user) return <Redirect to="/dashboard" />;
-    return <LoginPage />;
+    return (
+      <Suspense fallback={<PageFallback />}>
+        <LoginPage />
+      </Suspense>
+    );
   }
 
   if (!token) return <Redirect to="/login" />;
@@ -99,7 +109,9 @@ function Routes() {
     if (!hasRole(role, route.roles)) return <Redirect to="/dashboard" />;
     return (
       <AppShell fullHeight={route.fullHeight}>
-        <Fragment key={pathname}>{route.render(params)}</Fragment>
+        <Suspense fallback={<PageFallback />}>
+          <Fragment key={pathname}>{route.render(params)}</Fragment>
+        </Suspense>
       </AppShell>
     );
   }

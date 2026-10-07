@@ -1,7 +1,7 @@
 # PROJECT_STATUS.md — Current State
 
-Last updated: **2026-10-06, session 5** (security hardening, attendance corrections, holidays, mark-paid, pagination, Docker,
-PRD §33 docs, redesign Part 2 — completed and verified after a power cut interrupted the session's final steps)
+Last updated: **2026-10-07, session 7** (cleanups: user service, chat confidence post-check, frontend code-splitting,
+pagination for `/users` `/leaves` `/documents`, `axios` removed). Earlier: session 6 Docker bring-up, session 5 hardening/redesign.
 
 Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · 🔴 Not started · ⛔ Blocked · 💥 Broken
 
@@ -37,10 +37,10 @@ Legend: ✅ Complete · 🟡 In progress / partial · ⚠️ Needs testing · �
 | Excel reports (attendance, overtime, leave) | ✅ | OT amount pro-rated per record (KI-015 fixed) |
 | Users & roles admin | ✅ | |
 | Frontend: 13 pages | ✅ | **Redesign complete** (D-026, D-037, D-040): all 13 pages on design system v2, light + dark; legacy bridge deleted; `ui_qa.py` 0 issues, axe 0 violations in both themes |
-| Automated tests | ✅ | 37 files, 882 checks, all passing; dev DB unchanged by a run (D-023) |
+| Automated tests | ✅ | 38 files, 906 checks, all passing (2026-10-07); dev DB unchanged by a run (D-023) |
 | Demo data for the current month | ✅ | `scripts/generate_demo_month.py` (D-024) — re-run monthly |
 | README / docs | ✅ | + `docs/ARCHITECTURE.md`, `docs/AI.md`, `docs/API.md` (PRD §33) |
-| Deployment | 🟡 | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; **image build not yet run** (Docker daemon not running on the dev machine) |
+| Deployment | 🟡 | `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` + README; stack built and verified healthy in session 6 (see CHANGELOG) |
 | Out-of-PRD reference modules | 🔴 | P3 by decision D-002 |
 
 ## 2. PRD acceptance criteria (§36)
@@ -118,14 +118,18 @@ Frontend: untouched this session (last: `bunx tsc --noEmit` ✅, `bun run build`
 ## 5. Where we are / what's next
 
 **Current position:** All PRD requirements and all planned P1/P2 items are implemented and verified; the redesign is
-complete. **Session-5 work is uncommitted.**
+complete and the Docker stack has been brought up (session 6). Sessions 5–6 are committed; **session-7 cleanups are uncommitted**.
+
+**Session 7 (2026-10-07):** KI-034, KI-035, KI-037 fixed; KI-006 fixed (route-level code-splitting, D-042); KI-007 API pagination
+for `/users`, `/leaves`, `/documents`. Verified: `run_tests.py` 906/906, DB unchanged, `ui_qa.py` 0 issues, `tsc` + build clean.
+**Not verified:** axe scan after code-splitting (only `ui_qa.py` + a dashboard screenshot were checked); the Docker image was
+not rebuilt with the new frontend build.
 
 **Next logical tasks (DEVELOPMENT_PLAN.md):**
-1. **Commit** session 5 in logical commits (when the product owner asks) — it is the largest uncommitted change so far.
-2. Build and run the Docker stack once on a machine with Docker running (`docker compose up --build`).
-3. Owner decision on Google sign-in auto-provisioning (KI-033: domain allow-list / `email_verified`).
-4. Small cleanups: `users.py` queries → service (KI-034), chat confidence post-check (KI-035), drop unused `axios` (KI-037),
-   frontend code-splitting (KI-006), pagination for `/leaves`, `/documents`, `/users` (KI-007 remainder).
+1. **Commit** the session-7 cleanups (when the product owner asks).
+2. Owner decision on Google sign-in auto-provisioning (KI-033: domain allow-list / `email_verified`).
+3. Use the new pagination in the Leave / Documents / Users UI tables; `/salary` pagination.
+4. Rebuild the Docker images (`docker compose up -d --build`) to ship the split frontend build.
 
 ## 6. History
 
