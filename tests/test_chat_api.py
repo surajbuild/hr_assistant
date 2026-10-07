@@ -165,14 +165,17 @@ try:
     # -----------------------------------------------------------------------
     print("\n[7] Anti-Hallucination: Non-Existent Employee Inquiry")
     with patch("app.api.chat.generate_response") as mock_llm:
-        mock_llm.return_value = "I could not find any employee named Bruce Wayne in our records."
+        mock_llm.return_value = "Bruce Wayne is the CEO."  # must never be used
         q = "What is the designation of Bruce Wayne?"
         r_ghost = client.post("/chat", json={"question": q}, headers=hr_headers)
 
         chk(r_ghost.status_code == 200, "Non-existent inquiry returns 200 OK", f"Status: {r_ghost.status_code}")
-        called_prompt = mock_llm.call_args[1].get("prompt") or mock_llm.call_args[0][0]
-        chk("No employee record found" in called_prompt,
-            "Prompt explicitly indicates employee not found to prevent hallucination", f"Prompt:\n{called_prompt}")
+        ghost = r_ghost.json()
+        # D-044: the router answers "employee not found" itself (PRD §29 wording) — the LLM cannot invent a person
+        chk(not mock_llm.called, "LLM not called for an unknown employee", "LLM was called")
+        chk(ghost.get("answer") == 'I could not find an employee named "Bruce Wayne".',
+            "Answer is the PRD §29 'could not find an employee named …' message", f"Got: {ghost.get('answer')}")
+        chk(ghost.get("confidence") == "not_found", "confidence not_found", f"Got: {ghost.get('confidence')}")
 
     # -----------------------------------------------------------------------
     # [8] Safe LLM Provider Failure Handling

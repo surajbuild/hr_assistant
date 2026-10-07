@@ -179,7 +179,9 @@ try:
             "Prompt instructs the PRD not-found fallback")
 
     with patch("app.api.chat.generate_response") as mock_llm:
-        mock_llm.return_value = "Casual leave is 12 days."
+        # no figures: the grounding post-check (D-044) would rightly flag a number that is not in whichever
+        # document matched; this case only checks the legacy field and the policy routing
+        mock_llm.return_value = "Casual leave is described in the leave policy."
         r = client.post("/chat", json={"question": "What is the casual leave policy?"}, headers=emp_h)
         chk(r.status_code == 200 and r.json()["source"] in ("policies.json",) or r.json()["confidence"] in ("policy_reference", "document_grounded"),
             "Legacy `question` field still works; falls back to policies.json when no uploaded doc matches", r.text[:200])

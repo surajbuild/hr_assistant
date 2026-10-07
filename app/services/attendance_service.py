@@ -10,6 +10,7 @@ Contains reusable Python functions for:
 - Self-service check-in / check-out with late & overtime calculation
 - Company daily attendance view and filtered record listing (scoped by role)
 - Months that have data and employee rankings (overtime / late / absent) for the AI router
+- Per-employee summaries for a team / department over a period (group attendance questions)
 
 This module is independent of FastAPI HTTP concerns (no Request, HTTPException,
 or status codes) so that it can be invoked by both API routers and AI/tool agents.
@@ -382,6 +383,76 @@ def get_overtime_by_department(
         }
         for row in rows
     ]
+
+
+def get_group_attendance_summaries(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+    department: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    get_attendance_summary() for every employee (in `scope_ids`, optionally one department) that has records in
+    the period — one grouped query. Each dict has the summary keys plus employee_id, employee_code,
+    employee_name, department; ordered by department, then name.
+    """
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    def count_status(value: str):
+        return func.sum(case((Attendance.status == value, 1), else_=0))
+
+    query = (
+        db.query(
+            Employee.id, Employee.employee_code, Employee.name, Employee.department,
+            func.count(Attendance.id).label("total_days"),
+            count_status(AttendanceStatus.PRESENT.value).label("present_days"),
+            count_status(AttendanceStatus.ABSENT.value).label("absent_days"),
+            count_status(AttendanceStatus.HALF_DAY.value).label("half_day_days"),
+            count_status(AttendanceStatus.LEAVE.value).label("leave_days"),
+            count_status(AttendanceStatus.HOLIDAY.value).label("holiday_days"),
+            count_status(AttendanceStatus.WEEKEND.value).label("weekend_days"),
+            func.sum(case((Attendance.late_minutes > 0, 1), else_=0)).label("late_days"),
+            func.sum(case((Attendance.overtime_minutes > 0, 1), else_=0)).label("overtime_days"),
+            func.sum(Attendance.working_minutes).label("total_working_minutes"),
+            func.sum(Attendance.overtime_minutes).label("total_overtime_minutes"),
+        )
+        .join(Attendance, Attendance.employee_id == Employee.id)
+    )
+    if scope_ids is not None:
+        query = query.filter(Employee.id.in_(scope_ids or {-1}))
+    if department is not None:
+        query = query.filter(Employee.department == department)
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+    rows = query.group_by(Employee.id).order_by(Employee.department.asc(), Employee.name.asc()).all()
+
+    keys = (
+        "total_days", "present_days", "absent_days", "half_day_days", "leave_days", "holiday_days",
+        "weekend_days", "late_days", "overtime_days", "total_working_minutes", "total_overtime_minutes",
+    )
+    return [
+        {
+            "employee_id": row.id,
+            "employee_code": row.employee_code,
+            "employee_name": row.name,
+            "department": row.department,
+            **{key: int(getattr(row, key) or 0) for key in keys},
+        }
+        for row in rows
+    ]
+
+
+def combine_summaries(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Add up several get_attendance_summary()-style dicts (a team / department total)."""
+    keys = (
+        "total_days", "present_days", "absent_days", "half_day_days", "leave_days", "holiday_days",
+        "weekend_days", "late_days", "overtime_days", "total_working_minutes", "total_overtime_minutes",
+    )
+    return {key: sum(int(s[key]) for s in summaries) for key in keys}
 
 
 def attendance_percentage(summary: Dict[str, Any]) -> Dict[str, Any]:

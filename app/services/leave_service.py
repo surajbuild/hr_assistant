@@ -331,14 +331,22 @@ def get_leave_days_in_range(db: Session, employee_id: int, start: date, end: dat
     return result
 
 
-def get_employees_on_leave(db: Session, on_date: date, scope_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
-    """Employees with an approved leave covering `on_date` (same rule as the dashboard's "on leave today")."""
+def get_employees_on_leave(
+    db: Session,
+    on_date: date,
+    scope_ids: Optional[Set[int]] = None,
+    end_date: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Employees with an approved leave covering `on_date` (same rule as the dashboard's "on leave today"), or —
+    with `end_date` — any approved leave overlapping [on_date, end_date] ("who was on leave last week").
+    """
     query = (
         db.query(Leave, Employee)
         .join(Employee, Employee.id == Leave.employee_id)
         .filter(
             Leave.status == LeaveStatus.APPROVED.value,
-            Leave.from_date <= on_date,
+            Leave.from_date <= (end_date or on_date),
             Leave.to_date >= on_date,
         )
     )
