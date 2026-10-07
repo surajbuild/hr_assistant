@@ -43,6 +43,14 @@ type Block =
 
 const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
+/** A cell that is a figure: "₹8,500.00", "**₹590,000.00**", "91.7%", "1115 minutes", "-" (empty). */
+const NUMERIC_CELL = /^[*_\s]*(?:[₹$€£]\s?)?-?\d[\d,]*(?:\.\d+)?\s*(?:%|minutes?|hours?|days?)?[*_\s]*$|^\s*[-–—]?\s*$/i;
+
+/** Columns whose body cells are all figures — right-aligned so digits line up (tabular numerals). */
+function numericColumns(header: string[], rows: string[][]): boolean[] {
+  return header.map((_, ci) => rows.length > 0 && rows.some((r) => /\d/.test(r[ci] ?? "")) && rows.every((r) => NUMERIC_CELL.test(r[ci] ?? "")));
+}
+
 function splitRow(line: string): string[] {
   return line
     .trim()
@@ -184,20 +192,37 @@ export function Markdown({ text, className }: { text: string; className?: string
             );
           case "code":
             return (
-              <pre key={k} className="relative overflow-x-auto rounded-lg bg-surface-muted px-3 py-2 font-mono text-[12.5px] leading-relaxed">
+              <pre
+                key={k}
+                tabIndex={0}
+                className="relative overflow-x-auto rounded-lg bg-surface-muted px-3 py-2 font-mono text-[12.5px] leading-relaxed focus-visible:outline-2 focus-visible:outline-offset-2"
+              >
                 <code>{b.lines.join("\n")}</code>
               </pre>
             );
           case "hr":
             return <hr key={k} className="border-border" />;
-          case "table":
+          case "table": {
+            const numeric = numericColumns(b.header, b.rows);
             return (
-              <div key={k} className="relative max-w-full overflow-x-auto rounded-lg border border-border">
+              // Focusable scroll region: wide tables (e.g. payroll by department) scroll inside the bubble, and keyboard
+              // users must be able to reach that scroll (axe scrollable-region-focusable).
+              <div
+                key={k}
+                role="region"
+                tabIndex={0}
+                aria-label={`Table: ${b.header.join(", ")}`}
+                className="relative max-w-full overflow-x-auto rounded-lg border border-border focus-visible:outline-2 focus-visible:outline-offset-2"
+              >
                 <table className="w-full border-collapse text-[13px]">
                   <thead className="bg-surface-muted">
                     <tr>
                       {b.header.map((c, ci) => (
-                        <th key={ci} scope="col" className="px-2.5 py-1.5 text-left font-medium whitespace-nowrap text-muted-foreground">
+                        <th
+                          key={ci}
+                          scope="col"
+                          className={cn("px-2.5 py-1.5 font-medium whitespace-nowrap text-muted-foreground", numeric[ci] ? "text-right" : "text-left")}
+                        >
                           {renderInline(c, `${k}-h${ci}`)}
                         </th>
                       ))}
@@ -207,7 +232,7 @@ export function Markdown({ text, className }: { text: string; className?: string
                     {b.rows.map((r, ri) => (
                       <tr key={ri} className="border-t border-border">
                         {b.header.map((_, ci) => (
-                          <td key={ci} className="px-2.5 py-1.5 align-top tabular-nums">
+                          <td key={ci} className={cn("px-2.5 py-1.5 align-top tabular-nums", numeric[ci] && "text-right whitespace-nowrap")}>
                             {renderInline(r[ci] ?? "", `${k}-${ri}-${ci}`)}
                           </td>
                         ))}
@@ -217,6 +242,7 @@ export function Markdown({ text, className }: { text: string; className?: string
                 </table>
               </div>
             );
+          }
           default:
             return (
               <p key={k}>
