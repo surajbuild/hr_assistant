@@ -10,6 +10,7 @@ Contains reusable Python functions for:
 - Self-service check-in / check-out with late & overtime calculation
 - Company daily attendance view and filtered record listing (scoped by role)
 - Months that have data and employee rankings (overtime / late / absent) for the AI router
+- Per-employee summaries for a team / department over a period (group attendance questions)
 
 This module is independent of FastAPI HTTP concerns (no Request, HTTPException,
 or status codes) so that it can be invoked by both API routers and AI/tool agents.
@@ -276,10 +277,11 @@ def rank_employees(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     scope_ids: Optional[Set[int]] = None,
-    limit: int = 3,
+    limit: Optional[int] = 3,
 ) -> List[Dict[str, Any]]:
     """
     Rank employees by an attendance metric, highest first. Employees with a zero value are left out.
+    `limit=None` returns every employee with a non-zero value (threshold / "who did overtime" questions).
 
     metric:
       - "overtime": total overtime minutes
@@ -338,7 +340,137 @@ def rank_employees(
         item["value"] = {"overtime": item["overtime_minutes"], "late": item["late_days"], "absent": item["absent_days"]}[metric]
         if item["value"] > 0:
             ranked.append(item)
-    return ranked[:limit]
+    return ranked if limit is None else ranked[:limit]
+
+
+def get_overtime_by_department(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Overtime per department (department = employees.department, D-005), highest total first.
+
+    Returns dicts: department, total_overtime_minutes, employees_with_overtime, employees_with_records.
+    """
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    total = func.sum(Attendance.overtime_minutes)
+    query = (
+        db.query(
+            Employee.department,
+            total.label("total_overtime_minutes"),
+            func.count(func.distinct(case((Attendance.overtime_minutes > 0, Employee.id)))).label("with_overtime"),
+            func.count(func.distinct(Employee.id)).label("with_records"),
+        )
+        .join(Attendance, Attendance.employee_id == Employee.id)
+    )
+    if scope_ids is not None:
+        query = query.filter(Employee.id.in_(scope_ids or {-1}))
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+    rows = query.group_by(Employee.department).order_by(total.desc(), Employee.department.asc()).all()
+    return [
+        {
+            "department": row.department,
+            "total_overtime_minutes": int(row.total_overtime_minutes or 0),
+            "employees_with_overtime": int(row.with_overtime or 0),
+            "employees_with_records": int(row.with_records or 0),
+        }
+        for row in rows
+    ]
+
+
+def get_group_attendance_summaries(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    scope_ids: Optional[Set[int]] = None,
+    department: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    get_attendance_summary() for every employee (in `scope_ids`, optionally one department) that has records in
+    the period — one grouped query. Each dict has the summary keys plus employee_id, employee_code,
+    employee_name, department; ordered by department, then name.
+    """
+    if start_date and end_date and start_date > end_date:
+        raise InvalidDateRangeError("start_date cannot be after end_date.")
+
+    def count_status(value: str):
+        return func.sum(case((Attendance.status == value, 1), else_=0))
+
+    query = (
+        db.query(
+            Employee.id, Employee.employee_code, Employee.name, Employee.department,
+            func.count(Attendance.id).label("total_days"),
+            count_status(AttendanceStatus.PRESENT.value).label("present_days"),
+            count_status(AttendanceStatus.ABSENT.value).label("absent_days"),
+            count_status(AttendanceStatus.HALF_DAY.value).label("half_day_days"),
+            count_status(AttendanceStatus.LEAVE.value).label("leave_days"),
+            count_status(AttendanceStatus.HOLIDAY.value).label("holiday_days"),
+            count_status(AttendanceStatus.WEEKEND.value).label("weekend_days"),
+            func.sum(case((Attendance.late_minutes > 0, 1), else_=0)).label("late_days"),
+            func.sum(case((Attendance.overtime_minutes > 0, 1), else_=0)).label("overtime_days"),
+            func.sum(Attendance.working_minutes).label("total_working_minutes"),
+            func.sum(Attendance.overtime_minutes).label("total_overtime_minutes"),
+        )
+        .join(Attendance, Attendance.employee_id == Employee.id)
+    )
+    if scope_ids is not None:
+        query = query.filter(Employee.id.in_(scope_ids or {-1}))
+    if department is not None:
+        query = query.filter(Employee.department == department)
+    if start_date:
+        query = query.filter(Attendance.attendance_date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.attendance_date <= end_date)
+    rows = query.group_by(Employee.id).order_by(Employee.department.asc(), Employee.name.asc()).all()
+
+    keys = (
+        "total_days", "present_days", "absent_days", "half_day_days", "leave_days", "holiday_days",
+        "weekend_days", "late_days", "overtime_days", "total_working_minutes", "total_overtime_minutes",
+    )
+    return [
+        {
+            "employee_id": row.id,
+            "employee_code": row.employee_code,
+            "employee_name": row.name,
+            "department": row.department,
+            **{key: int(getattr(row, key) or 0) for key in keys},
+        }
+        for row in rows
+    ]
+
+
+def combine_summaries(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Add up several get_attendance_summary()-style dicts (a team / department total)."""
+    keys = (
+        "total_days", "present_days", "absent_days", "half_day_days", "leave_days", "holiday_days",
+        "weekend_days", "late_days", "overtime_days", "total_working_minutes", "total_overtime_minutes",
+    )
+    return {key: sum(int(s[key]) for s in summaries) for key in keys}
+
+
+def attendance_percentage(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Attendance percentage from a get_attendance_summary() result.
+
+    working days = recorded days that are not weekends or holidays (approved leave and absences count as
+                   working days not attended)
+    attended     = present days + 0.5 x half days
+    percentage   = attended / working days x 100, one decimal; None when there are no recorded working days.
+    """
+    working_days = summary["total_days"] - summary["weekend_days"] - summary["holiday_days"]
+    attended = summary["present_days"] + 0.5 * summary["half_day_days"]
+    return {
+        "working_days": working_days,
+        "attended_days": attended,
+        "percentage": round(attended / working_days * 100, 1) if working_days > 0 else None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ Usage (servers must be running: backend :8000, frontend :3000):
     pip install playwright            # dev-only, not in requirements.txt
     python scripts/ui_qa.py                         # all roles, both widths
     python scripts/ui_qa.py --roles admin --widths 1400 --out qa_shots
+    python scripts/ui_qa.py --base http://localhost:3001   # when :3000 is the Docker stack
 Exit code 1 if any issue is found.
 """
 
@@ -208,8 +209,10 @@ def run(roles, widths, out: Path) -> int:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default=BASE, help="frontend URL, e.g. http://localhost:3001 when :3000 is taken")
     ap.add_argument("--roles", nargs="*", default=ALL)
     ap.add_argument("--widths", nargs="*", type=int, default=[1440, 1024, 390])
     ap.add_argument("--out", default="qa_shots")
     args = ap.parse_args()
+    BASE = args.base.rstrip("/")  # module global read by the helpers above
     sys.exit(run(args.roles, args.widths, Path(args.out)))

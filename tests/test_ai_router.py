@@ -214,8 +214,10 @@ try:
     ctx_ghost, src_ghost, _ = retrieve_hr_context(
         db, hr_user, Intent.EMPLOYEE, "What is the designation of John Unknown?"
     )
-    chk("No employee record found" in ctx_ghost,
-        "Non-existent employee inquiry states record not found", f"Got: {ctx_ghost}")
+    from app.ai.router import direct_answer
+    chk(direct_answer(ctx_ghost) == 'I could not find an employee named "John Unknown".',
+        "Non-existent employee inquiry is answered 'could not find an employee named …' (no LLM, D-044)",
+        f"Got: {ctx_ghost}")
 
     print("\n" + SEP)
     print(f"  Results: {passed} passed, {failed} failed")

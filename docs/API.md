@@ -19,7 +19,7 @@
 
 ## Endpoint index
 
-59 operations in 13 groups.
+61 operations in 13 groups.
 
 | Group | Method | Path | Access | Summary |
 |---|---|---|---|---|
@@ -61,6 +61,8 @@
 | Employees | `PUT` | [`/employees/{employee_id}`](#put-employeesemployee_id) | `hr`, `admin` | Update Employee |
 | Employees | `DELETE` | [`/employees/{employee_id}`](#delete-employeesemployee_id) | `hr`, `admin` | Deactivate Employee (soft delete) |
 | Health | `GET` | [`/`](#get-) | Public (no token) | Root |
+| Health | `GET` | [`/health`](#get-health) | Public (no token) | Liveness |
+| Health | `GET` | [`/health/ready`](#get-healthready) | Public (no token) | Readiness (database reachable) |
 | Holidays | `GET` | [`/holidays`](#get-holidays) | Any authenticated user | Holiday Calendar |
 | Holidays | `POST` | [`/holidays`](#post-holidays) | `hr`, `admin` | Declare Company Holiday |
 | Holidays | `DELETE` | [`/holidays/{holiday_id}`](#delete-holidaysholiday_id) | `hr`, `admin` | Remove Company Holiday |
@@ -552,6 +554,20 @@
 - **Access:** Public (no token)
 - **Rules:** Health check used by the Docker healthcheck.
 - **Response:** 200 `{"message": "AI HR Assistant is Running"}`
+
+### GET /health
+
+**Liveness**
+
+- **Access:** Public (no token)
+- **Response 200:** no body
+
+### GET /health/ready
+
+**Readiness (database reachable)**
+
+- **Access:** Public (no token)
+- **Response 200:** no body
 
 ## Holidays
 

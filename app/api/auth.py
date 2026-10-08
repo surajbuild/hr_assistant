@@ -28,7 +28,12 @@ from app.database.connection import get_db
 from app.database.models import User, UserStatus
 from app.database.queries import get_user_by_email
 from app.services import auth_service
-from app.services.auth_service import InactiveUserError, OAuthAccountConflictError
+from app.services.auth_service import (
+    AccountNotProvisionedError,
+    InactiveUserError,
+    OAuthAccountConflictError,
+    UnverifiedEmailError,
+)
 from app.utils import rate_limit
 from app.utils.oauth import oauth, GOOGLE_REDIRECT_URI
 from app.utils.dependencies import get_current_user
@@ -219,6 +224,24 @@ async def google_login(request: Request):
 # GET /auth/google/callback
 # ---------------------------------------------------------------------------
 
+def _frontend_url() -> str:
+    return os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+
+def _claim_is_true(value) -> bool:
+    """OIDC `email_verified` is a boolean; some userinfo endpoints send the string "true"."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
+def _oauth_failure(request: Request, status_code: int, detail: str):
+    """
+    A failed Google sign-in. Started from the SPA (`?next=frontend`) → back to its login page with the reason in
+    the URL fragment (`/login#error=…`, never sent to a server); otherwise the usual JSON error.
+    """
+    if request.session.pop("oauth_next", None) == "frontend":
+        return RedirectResponse(f"{_frontend_url()}/login#error={quote(detail)}", status_code=302)
+    raise HTTPException(status_code=status_code, detail=detail)
+
 @router.get(
     "/google/callback",
     response_model=GoogleAuthResponse,
@@ -240,15 +263,11 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
     try:
         token = await oauth.google.authorize_access_token(request)
     except OAuthError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth authentication failed: {exc.description or exc.error}",
+        return _oauth_failure(
+            request, status.HTTP_400_BAD_REQUEST, f"OAuth authentication failed: {exc.description or exc.error}"
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth authorization error: {str(exc)}",
-        )
+        return _oauth_failure(request, status.HTTP_400_BAD_REQUEST, f"OAuth authorization error: {str(exc)}")
 
     # Step 2 — Extract user identity claims
     userinfo = token.get("userinfo")
@@ -269,46 +288,36 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
             pass
 
     if not userinfo:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to retrieve user identity from Google.",
-        )
+        return _oauth_failure(request, status.HTTP_400_BAD_REQUEST, "Failed to retrieve user identity from Google.")
 
     google_id = userinfo.get("sub") or userinfo.get("id")
     email = userinfo.get("email")
 
     if not google_id or not email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incomplete Google user profile (missing ID or email).",
+        return _oauth_failure(
+            request, status.HTTP_400_BAD_REQUEST, "Incomplete Google user profile (missing ID or email)."
         )
 
-    # Step 3 — Resolve, link, or provision local user in the database
+    # Step 3 — Resolve, link, or (allow-listed domains only) provision the local user (D-045)
     try:
         user = auth_service.resolve_or_create_google_user(
             db,
             google_id=str(google_id),
             email=email,
             name=userinfo.get("name"),
+            email_verified=_claim_is_true(userinfo.get("email_verified", userinfo.get("verified_email"))),
         )
-    except InactiveUserError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        )
+    except (InactiveUserError, UnverifiedEmailError, AccountNotProvisionedError) as exc:
+        return _oauth_failure(request, status.HTTP_403_FORBIDDEN, str(exc))
     except OAuthAccountConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
-        )
+        return _oauth_failure(request, status.HTTP_409_CONFLICT, str(exc))
 
     # Step 4 — Issue our application's standard JWT
     jwt_token = create_access_token(user_id=user.id, role=user.role)
 
     # Step 5 — Hand the token to the SPA if the login was started from it
     if request.session.pop("oauth_next", None) == "frontend":
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-        return RedirectResponse(f"{frontend_url}/login#token={quote(jwt_token)}", status_code=302)
+        return RedirectResponse(f"{_frontend_url()}/login#token={quote(jwt_token)}", status_code=302)
 
     return GoogleAuthResponse(
         access_token=jwt_token,

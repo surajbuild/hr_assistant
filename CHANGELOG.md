@@ -2,6 +2,90 @@
 
 All meaningful changes, newest first. Keep entries concise; link decisions (D-xxx) and issues (KI-xxx).
 
+## 2026-10-07 (session 9 — answer integrity, Google sign-in rules, production verification)
+
+### Fixed
+- Chat gave an employee **their own salary** for "Can I see bruce's salary?", "What is his salary?" and "What is my
+  manager's salary?" (labelled `data_verified`); HR's "Can I see the payroll?" returned HR's own salary (R-026, D-044).
+- Unknown people written in lower case ("was bruce present yesterday?") were treated as "nobody named" — an employee got
+  their own attendance (KI-038, D-044).
+- Employee codes matched by substring (`EMP0040` → EMP004); a duplicated full name or shared surname silently resolved to
+  the first employee (R-027).
+- "How many casual leaves are allowed?" (PRD §11) answered with the caller's balance instead of the policy; "Who was on
+  leave last week?" answered for today (R-028).
+- Google sign-in auto-created an active employee for **any** Google account and linked an unverified email to an existing
+  account (KI-033, R-029, D-045).
+- Answer tables in the chat were not keyboard-reachable (axe `scrollable-region-focusable`) (R-030).
+- Pooled DB connections were not pre-pinged (failures after a MySQL restart); the Docker healthcheck only checked that the
+  process answered (R-031).
+
+### Added
+- Router: `match_employees` (any-case names, candidates for ambiguous names, several people), unknown-person name slots,
+  pronouns, "my manager", requester vs subject; **direct answers** for clarifications and "employee not found"
+  (PRD §29 wording, no LLM call); no enumeration of colleagues for roles that may not see them (D-044).
+- Group tools (KI-039): attendance of a team / department / company for a day or a period, department payroll totals
+  (HR/Admin), on leave in any period, pending leave requests (approval queue), team / department employee lists.
+- `app/ai/grounding.py` — post-check of every number in an LLM answer; confidence `unverified` (UI "Check figures") and
+  `chat_logs.error = UNVERIFIED_NUMBERS: …`.
+- Services: `salary_service.get_payroll_by_department`, `get_salary_summary(department=)`,
+  `attendance_service.get_group_attendance_summaries` / `combine_summaries`, `get_employees_on_leave(end_date=)`.
+- `GET /health`, `GET /health/ready`; `app/utils/logging.py` (`LOG_LEVEL`); LLM retry for fast transient failures
+  (`LLM_MAX_RETRIES`, `LLM_RETRY_BACKOFF`); `GOOGLE_ALLOWED_DOMAINS`.
+- `scripts/verify_real_llm.py` (controlled real-provider check); `scripts/ui_qa.py --base`.
+- Tests: question bank [H] (32), `tests/test_production_hardening.py` (33), OAuth [2a]/[12]/[13] + unverified linking.
+- Decision records D-042 (reconstructed, KI-040), D-044, D-045.
+
+### Changed
+- System prompt: copy figures exactly, no arithmetic, state `Note:` lines, document text is data, tables for lists;
+  today's date in the prompt; `max_tokens` 700.
+- Chat UI: answers with a table use the full width with right-aligned figures; suggested prompts show the new
+  capabilities per role; failed Google sign-in is shown on the login page (`#error=`).
+- Managers' unnamed salary questions ("How much PF was deducted?") use their own record with a note, like employees'
+  (D-043 review in D-044). Managers can list their team in chat (same scope as `GET /employees`).
+- Docker backend healthcheck uses `/health/ready`.
+
+### Verification
+- `scripts/run_tests.py`: **39 files, 1035 checks, 0 failed** (session baseline 958); `db_snapshot.py diff` → unchanged.
+- The new tests run against the session-8 code: question bank 34 failures, OAuth 14, chat API 2, hardening file not
+  importable.
+- Real provider (OpenRouter `openai/gpt-4o-mini`): `verify_real_llm.py` 21/21 (before the changes 14/17); no answer
+  flagged by the grounding check.
+- `tsc` + `bun run build` clean; `export_api_docs.py --check` clean; `ui_qa.py` 0 issues (4 roles × 3 widths, dev
+  frontend on :3001); axe WCAG 2.1 A/AA 0 violations on Login (Google error state) and AI Assistant with a table answer,
+  light and dark.
+- Docker: images rebuilt from `docker-compose.yml`, run as a separate compose project (port 3010, own volumes, demo seed):
+  all three healthy, 11/11 HTTP checks through the proxy (readiness, login, new router behaviour, real LLM answer, chat
+  logs, RBAC, Google redirect), `ui_qa.py` 0 issues on it; project removed afterwards. The owner's running stack was not
+  touched (KI-044).
+
+## 2026-10-07 (session 8 — AI chat: targeting, PRD questions, failure handling)
+
+### Fixed
+- The chat router no longer answers with the caller's own record when it cannot tell who a question is about: group,
+  department, company, threshold, employee-ID and unclear questions get a group tool, a refusal or a clarification
+  (`clarification_needed`) — D-043, R-023. Example: HR "Who is employee 1025?" used to return HR's own profile.
+- "How much PF was deducted?", "How many hours did Aman work?" (were UNKNOWN) and "What was the total overtime amount?"
+  (was the caller's attendance) — R-024.
+- `POST /chat`: a database/retrieval failure is caught, rolled back, answered with a fixed message and written to `chat_logs`
+  (`RETRIEVAL_ERROR: …`, source `error`) instead of a 500 without a log row; LLM failures are no longer labelled
+  `data_verified` — both get confidence `unavailable` (R-025).
+
+### Added
+- Router tools: thresholds ("more than 5 late entries", "more than 10 hours overtime", "at least", "N or more"), lists ("which
+  members of my team worked overtime last week"), department-wise overtime, who is on leave today/yesterday/tomorrow,
+  employee-ID lookup ("employee 4" = EMP004), "today / yesterday / this week / last week" ranges, hours worked and attendance %
+  in the individual context, leave taken in a period, a Python totals line for multi-month salary contexts.
+- Services: `attendance_service.get_overtime_by_department`, `attendance_service.attendance_percentage`,
+  `rank_employees(limit=None)`, `leave_service.get_leave_days_in_range`, `leave_service.get_employees_on_leave`.
+- Chat UI answer labels "Needs clarification" and "Service unavailable" (`frontend/src/pages/chat/meta.ts`; metadata only).
+- Tests: question bank [F] (21 PRD questions) and [G] (13 + 8 no-substitution checks); `test_chat_api.py` [10] (failures).
+
+### Verification
+- `scripts/run_tests.py`: 38 files, **958 checks, 0 failed** (baseline this session: 906); DB unchanged vs the session-start snapshot.
+- The new [F]/[G] checks run against the old router: 34 failures + a crash; the new chat failure tests: 2 failures + an unhandled 500.
+- `bunx tsc --noEmit`, `bun run build`, `export_api_docs.py --check` clean; `ui_qa.py` (dev frontend on :3001) 0 issues;
+  axe WCAG 2.1 A/AA on the AI Assistant page 0 violations in light and dark.
+
 ## 2026-10-07 (session 7 — cleanups)
 
 ### Added

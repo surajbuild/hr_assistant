@@ -1,8 +1,9 @@
 /**
  * AI Assistant — static metadata: suggested prompts per role, confidence labels, data-source labels.
  * Prompts only use question types the backend router answers (app/ai/router.py): own attendance/leave/salary,
- * rankings (HR/Admin company-wide, managers team-scoped — D-032), headcount, company payroll (HR/Admin),
- * the holiday calendar (D-034) and policy questions (RAG over uploaded documents → policies.json).
+ * rankings and thresholds (HR/Admin company-wide, managers team-scoped — D-032), team / department attendance,
+ * pending leave requests, headcount, company and department payroll (HR/Admin), the holiday calendar (D-034) and
+ * policy questions (RAG over uploaded documents → policies.json). The first four are shown as composer chips.
  */
 import type { Role } from "@/lib/types";
 
@@ -10,33 +11,33 @@ export const PROMPTS: Record<Role, string[]> = {
   employee: [
     "What is my attendance this month?",
     "What is my leave balance?",
-    "How many days was I late this month?",
-    "What is my latest salary?",
+    "How much PF was deducted last month?",
+    "How many hours did I work last week?",
+    "How many casual leaves are allowed?",
     "What are the company holidays this year?",
-    "What is the leave policy?",
   ],
   manager: [
-    "Who on my team was late the most?",
-    "Who on my team worked the most overtime this month?",
-    "How many people are in my team?",
+    "Which members of my team worked overtime last week?",
+    "How many of my team were present today?",
+    "Which leave requests are pending approval?",
+    "Who on my team was late the most this month?",
     "What is my leave balance?",
-    "What are the company holidays this year?",
     "What is the leave policy?",
   ],
   hr: [
     "Who worked the most overtime this month?",
-    "Who was late the most this month?",
-    "How many days was Aman present in August?",
-    "What is the total salary paid in September 2024?",
-    "What are the company holidays this year?",
-    "What is the leave policy?",
+    "Show employees with more than 5 late entries this month.",
+    "How many employees are on leave today?",
+    "Show department-wise overtime this month.",
+    "What was Aman's attendance percentage in August 2024?",
+    "What is the payroll of each department?",
   ],
   admin: [
+    "How many employees were present today?",
     "Who worked the most overtime this month?",
     "How many employees are in each department?",
-    "Who was absent the most this month?",
-    "What is the total salary paid in September 2024?",
-    "What are the company holidays this year?",
+    "What is the total payroll for the latest month?",
+    "Which leave requests are pending approval?",
     "What is the leave policy?",
   ],
 };
@@ -49,7 +50,16 @@ export const ACCESS_SCOPE: Record<Role, string> = {
   admin: "Company-wide HR data including payroll, plus policies and holidays.",
 };
 
-export type ConfidenceKey = "data_verified" | "document_grounded" | "policy_reference" | "not_found" | "access_denied" | "general";
+export type ConfidenceKey =
+  | "data_verified"
+  | "unverified"
+  | "document_grounded"
+  | "policy_reference"
+  | "not_found"
+  | "clarification_needed"
+  | "access_denied"
+  | "unavailable"
+  | "general";
 export type ConfidenceTone = "present" | "brand" | "half" | "late" | "absent" | "neutral";
 
 export interface ConfidenceInfo {
@@ -64,6 +74,11 @@ export const CONFIDENCE: Record<ConfidenceKey, ConfidenceInfo> = {
     label: "Verified HR data",
     description: "Numbers were calculated by the HR system from database records; the AI only phrased them.",
     tone: "present",
+  },
+  unverified: {
+    label: "Check figures",
+    description: "The answer contains a number that is not in the HR records it was given. Check it against the source page before relying on it.",
+    tone: "late",
   },
   document_grounded: {
     label: "From HR documents",
@@ -80,10 +95,20 @@ export const CONFIDENCE: Record<ConfidenceKey, ConfidenceInfo> = {
     description: "The HR system has no records for what was asked (for example that person or period).",
     tone: "late",
   },
+  clarification_needed: {
+    label: "Needs clarification",
+    description: "It was not clear whose records (or which group) the question is about, so nothing was retrieved. Name the employee or rephrase.",
+    tone: "late",
+  },
   access_denied: {
     label: "Access restricted",
     description: "Your role is not allowed to see this. Nothing was retrieved and the AI was not asked.",
     tone: "absent",
+  },
+  unavailable: {
+    label: "Service unavailable",
+    description: "The HR data or the AI service could not be reached, so no answer was produced. Please try again.",
+    tone: "neutral",
   },
   general: {
     label: "General answer",
@@ -92,7 +117,17 @@ export const CONFIDENCE: Record<ConfidenceKey, ConfidenceInfo> = {
   },
 };
 
-export const CONFIDENCE_ORDER: ConfidenceKey[] = ["data_verified", "document_grounded", "policy_reference", "not_found", "access_denied", "general"];
+export const CONFIDENCE_ORDER: ConfidenceKey[] = [
+  "data_verified",
+  "unverified",
+  "document_grounded",
+  "policy_reference",
+  "not_found",
+  "clarification_needed",
+  "access_denied",
+  "unavailable",
+  "general",
+];
 
 export function confidenceInfo(value: string | number | null | undefined): (ConfidenceInfo & { key: ConfidenceKey }) | null {
   if (typeof value !== "string") return null;
@@ -111,7 +146,7 @@ const DATA_SOURCES: Record<string, string> = {
 };
 
 /** Sources that are not worth a chip (no data behind them). */
-const SILENT_SOURCES = new Set(["general", "guardrail", "unknown", ""]);
+const SILENT_SOURCES = new Set(["general", "guardrail", "unknown", "error", ""]);
 
 export interface SourceChip {
   key: string;

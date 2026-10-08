@@ -7,7 +7,7 @@ Contains reusable Python functions for:
 - Retrieving salary records for the authenticated employee (with strict data isolation)
 - Retrieving salary records for a specific employee (with employee existence validation)
 - Retrieving salary records for a specific month and year
-- Payroll register for a month
+- Payroll register for a month; company / one-department / per-department payroll totals (aggregates only)
 - Payroll engine: generate_payroll() computes monthly salary rows from the salary
   structure (employees.monthly_gross_salary), attendance and leave (D-021)
 - Overtime pay rates shared with the overtime Excel report (KI-015)
@@ -147,9 +147,10 @@ def get_salary_summary(
     db: Session,
     month: Optional[int] = None,
     year: Optional[int] = None,
+    department: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Calculate aggregated salary statistics across the organization.
+    Calculate aggregated salary statistics across the organization (or one department, D-005).
 
     Computes:
       - total_records / record_count: Count of salary records included
@@ -190,6 +191,8 @@ def get_salary_summary(
         query = query.filter(Salary.month == month)
     if year is not None:
         query = query.filter(Salary.year == year)
+    if department is not None:
+        query = query.join(Employee, Employee.id == Salary.employee_id).filter(Employee.department == department)
 
     result = query.one()
 
@@ -204,6 +207,7 @@ def get_salary_summary(
     return {
         "month": month,
         "year": year,
+        "department": department,
         "total_records": total_records,
         "total_employees": total_employees,
         "record_count": total_records,
@@ -219,6 +223,48 @@ def get_salary_summary(
 # ---------------------------------------------------------------------------
 # Payroll Sheet
 # ---------------------------------------------------------------------------
+
+def get_payroll_by_department(
+    db: Session,
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Payroll totals per department (employees.department, D-005), largest net total first.
+    Aggregates only — never per-person rows (AGENTS.md §3.6). Same keys as get_salary_summary + department.
+    """
+    query = (
+        db.query(
+            Employee.department,
+            func.count(Salary.id).label("records"),
+            func.count(distinct(Salary.employee_id)).label("employees"),
+            func.sum(Salary.gross_salary).label("gross"),
+            func.sum(Salary.pf).label("pf"),
+            func.sum(Salary.deductions).label("deductions"),
+            func.sum(Salary.overtime_amount).label("overtime"),
+            func.sum(Salary.net_salary).label("net"),
+        )
+        .join(Employee, Employee.id == Salary.employee_id)
+    )
+    if month is not None:
+        query = query.filter(Salary.month == month)
+    if year is not None:
+        query = query.filter(Salary.year == year)
+    rows = query.group_by(Employee.department).order_by(func.sum(Salary.net_salary).desc(), Employee.department).all()
+    return [
+        {
+            "department": row.department,
+            "record_count": int(row.records or 0),
+            "employee_count": int(row.employees or 0),
+            "total_gross_salary": round(float(row.gross or 0), 2),
+            "total_pf": round(float(row.pf or 0), 2),
+            "total_deductions": round(float(row.deductions or 0), 2),
+            "total_overtime_amount": round(float(row.overtime or 0), 2),
+            "total_net_salary": round(float(row.net or 0), 2),
+        }
+        for row in rows
+    ]
+
 
 def get_latest_payroll_period(db: Session) -> Optional[Tuple[int, int]]:
     """(month, year) of the most recent salary records, or None if there are none."""

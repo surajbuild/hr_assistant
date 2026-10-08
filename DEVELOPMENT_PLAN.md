@@ -3,7 +3,7 @@
 > Mark tasks `[x]` when done — never delete them. Add new tasks where they belong.
 > Priorities: **P0** blocker · **P1** critical (PRD acceptance) · **P2** important · **P3** nice-to-have.
 
-Last updated: 2026-10-07 (session 7 — cleanups: user service, confidence post-check, code-splitting, pagination, axios removal)
+Last updated: 2026-10-07 (session 9 — chat answer integrity D-044, Google sign-in D-045, health/readiness, real-LLM and Docker verification)
 
 ---
 
@@ -70,6 +70,14 @@ Dependencies:
 - [x] Tests for new endpoints (employees CRUD, departments, attendance daily/check-in, leaves list/balance/cancel/manager scope, salary list, documents/RAG, chat sources, users, dashboard/me)
 - [x] PRD §30 question bank: 20 normal / 10 incorrect / 10 security / 10 calculation / 10 RAG — `tests/test_question_bank.py`
       (22 / 11 / 13 / 13 / 11 = 70 checks, 2026-10-06); fixed the router gaps it exposed (D-029, D-030, R-019…R-022)
+- [x] Session 8 (2026-10-07, D-043): no caller-record fallback in the chat router; thresholds, department-wise overtime,
+      on leave today, last week, PF / overtime amount, hours worked, attendance %, employee-ID lookup; chat failures logged
+      and labelled `unavailable` — question bank [F] 21 + [G] 21 checks, `test_chat_api.py` [10] (R-023…R-025)
+- [x] Chat: lower-case unknown names (KI-038); group tools — team/department attendance, department payroll, leave in a
+      period, pending requests, team lists (KI-039); ambiguous / duplicate names, pronouns, "my manager", requester
+      phrasing; direct answers without the LLM; grounding post-check (2026-10-07 session 9, D-044) — question bank [H] 32
+- [ ] LLM-assisted intent fallback (KI-008, P2); multi-turn follow-ups ("and in August?"); group leave-usage tool (KI-039 rest)
+- [ ] Store `confidence` in `chat_logs` (migration) so reloaded history shows answer labels (KI-041)
 
 ## Frontend redesign (D-026) — product-owner request, 2026-10-05
 
@@ -107,6 +115,13 @@ Dependencies:
 - [x] Session-7 cleanups: `user_service` (KI-034), chat confidence post-check (KI-035), unused `axios` removed (KI-037),
       `limit`/`offset` on `/users`, `/leaves`, `/documents` (KI-007) — 2026-10-07, D-042
 - [ ] Use the new `/leaves`, `/documents`, `/users` pagination in the UI tables (API-only so far)
+- [x] Google sign-in production rules: verified email for linking, invite-only by default, `GOOGLE_ALLOWED_DOMAINS`,
+      errors back to the login page (KI-033, 2026-10-07 session 9, D-045)
+- [ ] Real Google consent round-trip with a real account (KI-004) — needs a person + the redirect URI in Google Cloud Console
+- [x] `/health` + `/health/ready` (Docker healthcheck on readiness), `pool_pre_ping`, operational logging (`LOG_LEVEL`),
+      LLM retry for fast transient failures (2026-10-07 session 9)
+- [x] Docker images rebuilt and verified in an isolated compose project (2026-10-07 session 9)
+- [ ] Owner: recreate the running Docker stack with the rebuilt images — `docker compose up -d` (KI-044)
 
 ## P3 — Nice-to-have (reference-site modules outside PRD scope)
 
@@ -172,7 +187,8 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted. Frontend calls
 | POST | `/documents/{id}/reindex` | admin, hr | re-parse + re-index |
 | POST | `/documents/upload` | admin, hr | multipart `file`, `name?` → parse+index |
 | DELETE | `/documents/{id}` | admin, hr | archive + remove chunks |
-| POST | `/chat` | any | `{message}` (or legacy `{question}`) → `{question, answer, intent, source, confidence, page, sources[]}`; confidence ∈ data_verified/document_grounded/policy_reference/not_found/access_denied/general |
+| POST | `/chat` | any | `{message}` (or legacy `{question}`) → `{question, answer, intent, source, confidence, page, sources[]}`; confidence ∈ data_verified/unverified/document_grounded/policy_reference/not_found/clarification_needed/access_denied/unavailable/general |
+| GET | `/health` · `/health/ready` | public | liveness · readiness (`SELECT 1`; 503 when MySQL is unreachable) |
 | GET | `/chat/history` | any | own last N chat logs |
 | GET | `/chat/logs` | admin | audit log; `limit, offset, search` (`X-Total-Count`) |
 | GET | `/dashboard/summary` | admin, hr | KPIs + charts (+ `monthly_attendance`) |

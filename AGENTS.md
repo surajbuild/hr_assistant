@@ -98,6 +98,10 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
    worker). Only trust `X-Forwarded-For` through `rate_limit.client_ip` (trusted proxies only).
 10. Nobody reviews their own request — leave (D-022) or attendance correction (D-033); HR/Admin cannot edit their own
    attendance record directly.
+11. Google sign-in (D-045): link an identity to an existing account only when `email_verified` is true; never create
+   accounts for unknown Google users unless their domain is in `GOOGLE_ALLOWED_DOMAINS`.
+12. The chat must never answer a question about someone else (a name in any case, "his", "my manager's", an ambiguous
+   name) with the caller's own record, and must never guess between employees who share a name (D-043, D-044).
 
 ## 4. Database rules
 
@@ -138,7 +142,8 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - `pytest` can also collect them, but the canonical runner is `scripts/run_tests.py`.
 - Tests that depend on seed data assume `scripts/seed_db.py` has been run. Do not hard-code employee counts higher than the seed provides (6 employees).
 - UI changes: run the browser QA harness `python scripts/ui_qa.py` (needs `pip install -r requirements-dev.txt`, both
-  servers running, Microsoft Edge installed) — it must report `0 issue(s)`; then look at the screenshots it writes.
+  servers running, Microsoft Edge installed; `--base http://localhost:3001` when :3000 is the Docker stack) — it must report
+  `0 issue(s)`; then look at the screenshots it writes.
 - Every new endpoint needs at least: happy path, 401 unauthenticated, 403 wrong role, ownership/isolation check.
 - LLM calls must be mocked in tests (`unittest.mock.patch("app.api.chat.generate_response", ...)`) — never call the real provider from tests.
 - Run the full suite before handing off and record the result in `PROJECT_STATUS.md`.
@@ -286,3 +291,20 @@ enforcing role-based permissions. The PRD (`prd_extracted.md`) is the product re
 - `tests/test_question_bank.py` is the AI regression bank (PRD §30). When a chat question is answered wrongly, add it there
   first (failing), then fix the router. Check refusals with "LLM not called", not only with the answer text — the old router
   answered "another employee's salary" with the caller's own salary, which looked fine at a glance.
+- (Session 9) In chat routing, "I"/"me" is often the **requester**, not the subject ("Can I see bruce's salary?", "show me
+  the payroll") — use `router.refers_to_self`, never a bare `\b(i|me)\b` check. Names must match case-insensitively; a new
+  ordinary word that lands in a name slot goes into `_NOT_A_NAME`.
+- Clarifications and "employee not found" are final answers built by the router (`CLARIFICATION_PREFIX` /
+  `NOT_FOUND_PREFIX` → `direct_answer`); don't write LLM instructions into those contexts.
+- Every figure the LLM may quote must be written in the context in its final form (totals included) — the grounding
+  post-check (`app/ai/grounding.py`) labels answers with any other number `unverified`. Mock LLM answers in tests must not
+  invent numbers unless the test is about that check.
+- The real provider is verified only with the manual `scripts/verify_real_llm.py` (it cleans up its `chat_logs` rows).
+  Browser scripts that send chat messages must wait for the request to finish before deleting their log rows — a row that
+  lands after the cleanup breaks the "DB unchanged" check.
+- Before editing uncommitted work in place, note that new tests should also be run against the *old* code: Claude Code keeps
+  pre-edit snapshots in `~/.claude/file-history/<session>/` (`…@v1`); copy them into a scratch tree to prove a test fails on
+  the old behaviour. Never leave `.env` copies behind.
+- Docker verification without touching the owner's stack: build with `docker compose build`, then run the images as another
+  project (`docker compose -p hrverify -f docker-compose.yml -f <override with image: …>` with `FRONTEND_PORT`,
+  `DOCKER_SUBNET`, `FRONTEND_IP` overridden), and remove it with `down -v` (only that project's volumes).

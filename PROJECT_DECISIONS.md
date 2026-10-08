@@ -444,3 +444,125 @@ Format: **Date · Decision · Reason · Alternatives considered · Impact**
   the login through `/api/auth/google/login`, so the callback must use the same origin (the session cookie is set there too).
 - **Impact:** that URI must be registered in Google Cloud Console. `FRONTEND_URL` stays `http://localhost:3000`. Real Google
   round-trip still unverified (KI-004).
+
+### D-042 — Session-7 cleanups: D-035 pagination on `/users`, `/leaves`, `/documents`; route-level code-splitting
+- **Date:** 2026-10-07 (session 7). **Written in session 9** (KI-040): session 7 cited D-042 in commit `41e9cc4`
+  ("refactor: extract user_service and paginate users/leaves/documents (D-042, KI-007, KI-034)"), in CHANGELOG
+  2026-10-07, DEVELOPMENT_PLAN and KNOWN_ISSUES KI-006, but never wrote the entry. This record states only what those
+  sources and the code establish; nothing was added.
+- **Decision:**
+  - `GET /users`, `GET /leaves` and `GET /documents` accept optional `limit` / `offset` and report the total in
+    `X-Total-Count`, following D-035 (the response stays a plain JSON array, so existing clients are unaffected).
+    The UI tables do not use it yet (DEVELOPMENT_PLAN P2).
+  - The frontend route pages are `React.lazy` chunks behind `Suspense` and `frontend/build.ts` sets `splitting: true`
+    (commit `f3e5a63`, KI-006): the single ≈ 780 KB bundle became 53 chunks, the largest ≈ 407 KB.
+- **Reason:** KI-007 (lists returned everything) and KI-006 (bundle size); both were open P2 items.
+- **Impact:** `tests/test_pagination_cleanups.py`; `scripts/ui_qa.py` waits for the page `<h1>` because lazy pages mount
+  after `networkidle`.
+
+### D-043 — The chat never substitutes the caller's record; group / threshold / PF / hours questions get their own tools
+- **Date:** 2026-10-07 (session 8)
+- **Decision:**
+  - `router.find_target_employee` lost its last line ("nobody named → the caller"). It now returns `(employee, is_other, note)`:
+    a named employee (code, **employee ID** — "employee 4" = the number of the code, EMP004 — or name); unknown code/ID/name or an
+    unnamed colleague → nobody (`not_found` / refusal, D-030); a team, department, "employees", company … question → nobody
+    (group); "my / I / me" → the caller. When **nothing** is named: the `employee` role gets their own record **with a note the
+    answer must state** ("no person was named, so these are your records") unless the wording is aggregate (total, average,
+    most, who, which …) — an employee can only ever see their own records, so a plain "How much PF was deducted?" can only mean
+    them. Every other role gets a **clarification** context (`Clarification needed: …`, no records loaded, confidence
+    `clarification_needed`) instead of their own figures.
+  - Group questions with no tool ("attendance of the Engineering department", "salary of the Engineering department") → the
+    same clarification for roles that may see the data, the usual access denial for those that may not.
+  - New controlled tools (same roles/scope as the rankings, D-032: HR/Admin company-wide, managers self + direct reports,
+    employees refused): thresholds ("more than 5 late entries", "more than 10 hours overtime", "at least …", "N or more"),
+    lists ("who worked overtime last week", "which members of my team …"), department-wise overtime
+    (`attendance_service.get_overtime_by_department`), who is on approved leave today/yesterday/tomorrow
+    (`leave_service.get_employees_on_leave`, the dashboard rule). "my team" → self + direct reports for any role.
+  - Individual attendance context adds hours worked and an **attendance percentage** = (present days + 0.5 × half days) ÷
+    recorded working days (recorded days minus weekend/holiday rows; absences and leave count as not attended) —
+    `attendance_service.attendance_percentage`. For Aman, August 2024 this gives 22 of 24 = 91.7 %, matching the PRD §1 example.
+  - SALARY intent now covers "PF", "provident fund", "overtime amount/pay"; "total PF / total overtime amount" with nobody named is
+    the company payroll summary (HR/Admin; others refused). A per-person salary context lists a Python-computed totals line when
+    several months are shown, so the LLM never adds money up. A department name is never answered with the company summary.
+  - `resolve_date_range`: "today", "yesterday", "this week", "last week" (previous Monday–Sunday) for attendance, rankings,
+    thresholds, department overtime and "leave taken in …".
+  - `POST /chat` failures: a retrieval/database exception is caught (session rolled back, fixed "could not retrieve" answer, LLM
+    not called, `chat_logs.error = RETRIEVAL_ERROR: …`, source `error`); LLM failures keep their message. Both → confidence
+    `unavailable` (previously an LLM failure on a data question was labelled `data_verified`, and a DB failure was a 500 without a
+    log row). The chat UI knows the two new labels (`clarification_needed`, `unavailable`).
+- **Reason:** project audit (session 8): HR asking "Who is employee 1025?", "Show department-wise overtime", "How many employees are on
+  leave today?" received **their own** profile/attendance/leave record, labelled `data_verified`; several PRD §7–§10 example
+  questions were mis-routed (PF and "hours did X work" → UNKNOWN; "total overtime amount" → the caller's attendance).
+- **Alternatives:** clarification for every role including employees (rejected: an employee's plain question has exactly one
+  possible subject; the note keeps it explicit — easy to switch off in `find_target_employee` if the owner prefers);
+  answering clarifications without the LLM (kept the existing pattern: the LLM gets a context with no figures, as for D-030).
+- **Impact:** no permission rule changed. `tests/test_question_bank.py` [F] (21 PRD questions, numbers from raw SQL) and [G]
+  (13 no-substitution questions + 8 direct target checks); `tests/test_chat_api.py` [10] (failure handling). Against the old code
+  34 question-bank checks fail and the target check crashes; the retrieval-failure test raised a 500.
+- **Reviewed in session 9 (D-044):** kept. An employee's unnamed "How much PF was deducted?" can only be about themself
+  (they may see no one else's data) and the note makes the assumption explicit — privacy-safe and matching PRD §4.1/§8.
+  Extended to managers for salary only (they may see no one else's salary). The real risk was a *different* person
+  being mistaken for "nobody named" (lower-case names, "his", "my manager's", "Can I see bruce's …"), fixed in D-044.
+
+### D-044 — Chat answer integrity: who is asked about, direct answers, grounding post-check, group tools (session 9)
+- **Date:** 2026-10-07 (session 9)
+- **Decision:**
+  - **Target resolution** (`router.match_employees`, `find_target_employee`): employee codes match as whole words
+    (`EMP0040` no longer matches EMP004); names match in any case, full name before first name / surname; a name that fits
+    several employees (shared surname, duplicate full name) is **never guessed** — the caller gets a clarification listing
+    the candidates they may see; two people in one question → "one at a time". Unknown persons are recognised in any case
+    by name slots (possessive, "was X present", "who is X", "of / for X" when the caller is not the subject) with an
+    exclusion list of ordinary/HR words, relatives and festivals (KI-038). "he / his / she / her / they / their" = an
+    unnamed other person. "my manager's …" = the caller's manager. "I" / "me" as the *requester* ("Can I see …", "show
+    me …") does not make the caller the subject.
+  - **Direct answers:** clarifications and "employee not found" are written by the router (`direct_answer`, prefixes
+    `Clarification needed:` / `Employee not found:`) and returned without calling the LLM, in PRD §29 wording
+    (`I could not find an employee named "Bruce".`).
+  - **No enumeration:** for roles that may not see other people's data of the asked kind, an unknown name gets the same
+    access denial as a real colleague.
+  - **Grounding post-check** (`app/ai/grounding.py`): every number in an LLM answer must occur by value in the verified
+    context, the question or today's date; otherwise confidence `unverified` (UI "Check figures") and
+    `chat_logs.error = UNVERIFIED_NUMBERS: …`. The answer is not rewritten.
+  - **Prompt:** today's date in the user prompt; system rules for numbers (copy exactly, no arithmetic), stating `Note:`
+    lines, uploaded document text as data not instructions, Markdown tables for lists of 3+.
+  - **Group tools (KI-039):** attendance of a team / department / company for a day (daily sheet) or period (per
+    department and per employee up to 25; attendance %), department payroll totals (HR/Admin, aggregates only), who was on
+    leave in any period (was: always today), pending leave requests (approval queue, own requests excluded), team /
+    department employee lists (same scope as `GET /employees`; managers were refused before).
+  - **Routing:** "How many casual leaves are allowed?" (PRD §11) is POLICY, not the caller's balance; "who works in X" is
+    EMPLOYEE.
+  - **LLM client:** one retry for fast transient failures (connect error, 429/502/503/504), never for read timeouts;
+    `max_tokens` 700.
+- **Reason:** session-9 audit + a real-provider run. On the session-8 code an employee asking "Can I see bruce's salary?",
+  "What is his salary?" or "What is my manager's salary?" received **their own salary** labelled `data_verified`; HR's
+  "Can I see the payroll?" returned HR's own salary; "was bruce present yesterday?" gave the employee their own attendance
+  (the real model then mixed both subjects); `EMP0040` resolved to EMP004; duplicate names silently picked the first;
+  "Who was on leave last week?" answered for today; PRD §11's policy question returned a balance.
+- **Permissions:** no rule widened beyond an existing REST rule — managers' team lists follow `GET /employees`, department
+  payroll is HR/Admin like `GET /salary/summary`. The chat became stricter (no enumeration, no guessing).
+- **Alternatives:** rewriting or blocking `unverified` answers (rejected: a false positive would destroy a correct answer;
+  a visible flag + audit entry is safer); an LLM-based entity extractor (rejected for now: non-deterministic, and the
+  permission-relevant decision "who is this about" must be testable).
+- **Impact:** `tests/test_question_bank.py` [H] 32 checks (+ 10 updated [B]/[F]/[G] cases), `tests/test_production_hardening.py`,
+  `tests/test_chat_api.py` [7]; `scripts/verify_real_llm.py` (manual real-provider check). On the session-8 code 34
+  question-bank checks fail.
+
+### D-045 — Google sign-in stays, invite-only by default, verified email required (KI-033)
+- **Date:** 2026-10-07 (session 9)
+- **Decision:** Keep Google sign-in (built in D-014/D-041, credentials configured), but:
+  - a **new** Google identity is linked to an existing account only when Google reports `email_verified = true`
+    (otherwise 403);
+  - an unknown Google account is **not** auto-provisioned unless its email domain is listed in `GOOGLE_ALLOWED_DOMAINS`
+    (comma-separated; empty = invite-only, the default). HR creates the employee with that email; the person then signs
+    in with Google;
+  - a failed sign-in started from the SPA returns to `/login#error=<reason>` and the login page shows it (was a raw JSON
+    error page).
+- **Reason:** an HRMS is not open registration. Before, any Google account became an active `employee` with an employee
+  row (visible in headcount, documents, holiday data), and the email-linking path did not check `email_verified` — a
+  Google account carrying an unverified copy of a colleague's address could be linked to that colleague's account
+  (takeover). Reproduced in session 9: running the new tests against the old code created such an account.
+- **Alternatives:** removing Google sign-in (rejected: it is already built and the owner configured credentials; with
+  these rules it adds convenience, not risk); domain allow-list as the only mode (rejected: many deployments have one HR
+  team creating accounts — invite-only is the safer default).
+- **Impact:** `.env.example` `GOOGLE_ALLOWED_DOMAINS`; `tests/test_oauth_google.py` [2a], unverified/no-claim linking,
+  [12], [13]. **Not verified:** the real Google consent round-trip (needs a person signing in; KI-004).

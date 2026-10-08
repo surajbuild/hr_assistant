@@ -185,14 +185,18 @@ function ErrorBubble({ m, now, onRetry, busy }: { m: ChatMessage; now: number; o
   );
 }
 
+/** A Markdown pipe table (header row followed by a |---| separator) — such answers get the full width. */
+const TABLE_RX = /^.*\|.*\n\s*\|?\s*:?-{2,}/m;
+
 function AssistantBubble({ m }: { m: ChatMessage }) {
   const chips = sourceChips(m.sources, m.source);
   const conf = confidenceInfo(m.confidence);
   const intent = intentLabel(m.intent);
+  const wide = TABLE_RX.test(m.text);
   return (
     <div className="flex items-end gap-2.5">
       <AssistantMark className="mb-6" />
-      <div className="flex max-w-[85%] min-w-0 flex-col sm:max-w-[75%]">
+      <div className={cn("flex min-w-0 flex-col", wide ? "flex-1" : "max-w-[85%] sm:max-w-[75%]")}>
         <div className="rounded-2xl rounded-bl-md border border-border bg-surface px-4 py-3 text-sm leading-relaxed text-foreground">
           <Markdown text={m.text} />
           {(chips.length > 0 || conf) && (

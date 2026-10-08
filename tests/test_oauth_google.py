@@ -33,8 +33,9 @@ TEST_CODES = [
 
 def cleanup():
     # Find all test users
+    db.rollback()  # fresh snapshot: rows written through the API must be visible here
     users = db.query(User).filter(
-        (User.email.in_(TEST_EMAILS)) | (User.email.like("google.%@hr.dev"))
+        (User.email.in_(TEST_EMAILS)) | (User.email.like("google.%@hr.dev")) | (User.email.like("google.%@elsewhere.dev"))
     ).all()
     test_emp_ids = [u.employee_id for u in users if u.employee_id]
     for u in users:
@@ -100,7 +101,6 @@ try:
     # -----------------------------------------------------------------------
     # [2] OAuth callback handles successful authentication for a new user
     # -----------------------------------------------------------------------
-    print("\n[2] OAuth callback provisions new user with nullable password_hash")
     mock_token_new = {
         "access_token": "mock-google-access-token-1",
         "token_type": "Bearer",
@@ -112,7 +112,23 @@ try:
         }
     }
 
-    with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+    # D-045: invite-only by default — an unknown Google account gets no account and no employee row
+    print("\n[2a] Unknown Google account is refused when GOOGLE_ALLOWED_DOMAINS is empty (invite-only, D-045)")
+    users_before = db.query(User).count()
+    emps_before = db.query(Employee).count()
+    with patch.dict(os.environ, {"GOOGLE_ALLOWED_DOMAINS": ""}), \
+         patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+        mock_auth.return_value = mock_token_new
+        r_refused = client.get("/auth/google/callback?code=mock_code_0&state=mock_state_0")
+    chk(r_refused.status_code == 403, "unknown Google account -> 403", f"status {r_refused.status_code}: {r_refused.text}")
+    chk("access_token" not in r_refused.text, "no token issued", r_refused.text)
+    db.commit()
+    chk(db.query(User).count() == users_before and db.query(Employee).count() == emps_before,
+        "no user and no employee row created", "rows were created")
+
+    print("\n[2] OAuth callback provisions new user (allow-listed domain) with nullable password_hash")
+    with patch.dict(os.environ, {"GOOGLE_ALLOWED_DOMAINS": "hr.dev, example.org"}), \
+         patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
         mock_auth.return_value = mock_token_new
         r_cb = client.get("/auth/google/callback?code=mock_code_1&state=mock_state_1")
 
@@ -125,6 +141,7 @@ try:
     chk(data_new.get("email") == "google.new@hr.dev", "email matches google profile", f"Got {data_new.get('email')}")
 
     # Verify database state for Google-only user
+    db.commit()  # fresh snapshot (MySQL REPEATABLE READ) — [2a] read the tables before this user existed
     u_new = db.query(User).filter(User.google_id == "google-sub-9001").first()
     chk(u_new is not None, "user found in DB by google_id", "User not in DB")
     chk(u_new.password_hash is None, "password_hash is NULL for Google-only user", f"Got: {u_new.password_hash}")
@@ -173,6 +190,28 @@ try:
     )
     chk(user_link.google_id is None, "initially google_id is None", "Expected None")
 
+    # D-045: an unverified email must never be linked to an existing account (account takeover)
+    unverified_token = {
+        "access_token": "mock-token-unverified",
+        "token_type": "Bearer",
+        "userinfo": {"sub": "google-sub-ATTACKER", "email": "google.link@hr.dev", "name": "Attacker",
+                     "email_verified": False},
+    }
+    with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+        mock_auth.return_value = unverified_token
+        r_unverified = client.get("/auth/google/callback?code=mock_code_u&state=mock_state_u")
+    chk(r_unverified.status_code == 403, "unverified Google email -> 403", f"status {r_unverified.status_code}")
+    db.commit()
+    chk(db.query(User).filter(User.id == user_link.id).first().google_id is None,
+        "unverified email was NOT linked to the existing HR account", "google_id was linked")
+    no_claim_token = {"access_token": "t", "token_type": "Bearer",
+                      "userinfo": {"sub": "google-sub-NOCLAIM", "email": "google.link@hr.dev"}}
+    with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+        mock_auth.return_value = no_claim_token
+        r_noclaim = client.get("/auth/google/callback?code=mock_code_n&state=mock_state_n")
+    chk(r_noclaim.status_code == 403, "missing email_verified claim -> 403 (treated as unverified)",
+        f"status {r_noclaim.status_code}")
+
     mock_token_link = {
         "access_token": "mock-token-2",
         "token_type": "Bearer",
@@ -180,6 +219,7 @@ try:
             "sub": "google-sub-9002",
             "email": "google.link@hr.dev",
             "name": "Existing HR Staff",
+            "email_verified": "true",  # some userinfo endpoints send the string form
         }
     }
     with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
@@ -248,6 +288,7 @@ try:
             "sub": "google-sub-9003",
             "email": "google.inact@hr.dev",
             "name": "Inactive User",
+            "email_verified": True,
         }
     }
     with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
@@ -267,6 +308,7 @@ try:
             "sub": "google-sub-DIFFERENT",
             "email": "google.link@hr.dev",  # already linked to google-sub-9002
             "name": "Attacker",
+            "email_verified": True,
         }
     }
     with patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
@@ -296,6 +338,35 @@ try:
         r_bad_prof = client.get("/auth/google/callback?code=code_bad&state=state_bad")
 
     chk(r_bad_prof.status_code == 400, "incomplete profile returns 400 Bad Request", f"status {r_bad_prof.status_code}")
+
+    # -----------------------------------------------------------------------
+    # [12] Allow-list only admits its own domains
+    # -----------------------------------------------------------------------
+    print("\n[12] GOOGLE_ALLOWED_DOMAINS admits only the listed domains")
+    outsider = {"access_token": "t", "token_type": "Bearer",
+                "userinfo": {"sub": "google-sub-OUT", "email": "google.outsider@elsewhere.dev", "email_verified": True}}
+    with patch.dict(os.environ, {"GOOGLE_ALLOWED_DOMAINS": "hr.dev"}), \
+         patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+        mock_auth.return_value = outsider
+        r_out = client.get("/auth/google/callback?code=c&state=s")
+    chk(r_out.status_code == 403, "verified account from a non-listed domain -> 403", f"status {r_out.status_code}")
+    db.commit()
+    chk(db.query(User).filter(User.email == "google.outsider@elsewhere.dev").count() == 0,
+        "no account created for the outsider", "account created")
+
+    # -----------------------------------------------------------------------
+    # [13] A sign-in started from the SPA returns failures to the login page (D-045)
+    # -----------------------------------------------------------------------
+    print("\n[13] SPA-started sign-in failure -> 302 to FRONTEND_URL/login#error=… (no JSON page)")
+    client.get("/auth/google/login?next=frontend", follow_redirects=False)  # stores oauth_next in the session
+    with patch.dict(os.environ, {"GOOGLE_ALLOWED_DOMAINS": "", "FRONTEND_URL": "http://spa.test:3000"}), \
+         patch.object(oauth.google, "authorize_access_token", new_callable=AsyncMock) as mock_auth:
+        mock_auth.return_value = outsider
+        r_spa = client.get("/auth/google/callback?code=c2&state=s2", follow_redirects=False)
+    loc = r_spa.headers.get("location", "")
+    chk(r_spa.status_code == 302 and loc.startswith("http://spa.test:3000/login#error="),
+        "redirects to the SPA login page with #error", f"status {r_spa.status_code} location {loc}")
+    chk("token=" not in loc, "no token in the failure redirect", loc)
 
 except Exception as e:
     print("\nEXCEPTION:", e)

@@ -57,12 +57,16 @@ FastAPI (:8000) ── JWT auth (get_current_user) ── RBAC (require_role + e
          1. sanitize + prompt-injection guardrail (app/ai/guardrails.py)   → refuse, log
          2. intent router (app/ai/router.py: EMPLOYEE / ATTENDANCE / LEAVE / SALARY / POLICY / GENERAL / UNKNOWN)
          3a. data intents  → controlled service calls + RBAC check (check_rbac_access) → verified context
-             (profiles, directory, department headcount, attendance summaries, overtime/late/absence rankings,
-              leave balances, payslips, payroll summary; periods like "this month" / "September" resolved per D-029)
+             (profiles, team lists, department headcount, attendance summaries, team/department attendance,
+              overtime/late/absence rankings and thresholds, leave balances, who is on leave, pending requests,
+              payslips, company/department payroll totals; periods like "this month" / "last week" per D-029)
+             who the question is about: name/code/ID in any case; ambiguous or unknown people are never guessed (D-044)
          3b. POLICY/UNKNOWN → RAG search over uploaded docs (app/rag/retriever.py) → fallback app/data/policies.json
+         3c. refusals, clarifications and "employee not found" are answered here — the LLM is not called
          4. LLM (app/ai/llm.py) phrases the verified context, with anti-hallucination prompt (app/ai/prompts.py)
-         5. chat_logs row (user, question, intent, source, answer, latency, error)
-         6. {answer, intent, source, confidence, page, sources[]}
+         5. grounding post-check (app/ai/grounding.py): numbers not in the context → confidence "unverified"
+         6. chat_logs row (user, question, intent, source, answer, latency, error)
+         7. {answer, intent, source, confidence, page, sources[]}
 ```
 
 Document upload: `POST /documents/upload` → validate (pdf/docx/txt, ≤10 MB) → store in `documents/` with a random
@@ -151,7 +155,7 @@ Upload the files in `sample_documents/` as HR on the Documents page to demo poli
 | Service | Image / build | Published | Notes |
 |---|---|---|---|
 | `db` | `mysql:8.4` (utf8mb4) | — | data in volume `mysql_data` |
-| `backend` | `Dockerfile` (python:3.14-slim, non-root) | — | waits for MySQL → `alembic upgrade head` → optional seed → `uvicorn` (1 worker, no `--reload`); uploads in volume `documents_data` |
+| `backend` | `Dockerfile` (python:3.14-slim, non-root) | — | waits for MySQL → `alembic upgrade head` → optional seed → `uvicorn` (1 worker, no `--reload`); uploads in volume `documents_data`; healthy = `GET /health/ready` (database reachable) |
 | `frontend` | `frontend/Dockerfile` (oven/bun, non-root) | `3000` | `NODE_ENV=production bun src/index.ts`; proxies `/api/*` → `http://backend:8000` |
 
 The browser only talks to the frontend; MySQL and the backend are not reachable from the host.
@@ -193,7 +197,8 @@ The browser only talks to the frontend; MySQL and the backend are not reachable 
 6. **Google OAuth in Docker:** the login page starts Google sign-in through the frontend proxy
    (`/api/auth/google/login?next=frontend`), so the backend does not need to be published. Set
    `FRONTEND_URL=http://<host>:<FRONTEND_PORT>` and `GOOGLE_REDIRECT_URI=http://<host>:<FRONTEND_PORT>/api/auth/google/callback`,
-   and register that redirect URI / origin in the Google Cloud Console (§11). (Not yet tried with a real Google account — KI-004.)
+   and register that redirect URI / origin in the Google Cloud Console (§11). Google sign-in is invite-only unless
+   `GOOGLE_ALLOWED_DOMAINS` is set (D-045). (Not yet tried with a real Google account — KI-004.)
    The backend trusts `X-Forwarded-For` only from the frontend container's fixed IP (`FRONTEND_IP`, default `172.28.0.10`);
    if you ever publish the backend port, bind it to `127.0.0.1`.
 7. **HTTPS:** put a TLS-terminating reverse proxy (nginx, Caddy, Traefik) in front of port 3000 for any shared deployment.
@@ -202,7 +207,7 @@ The browser only talks to the frontend; MySQL and the backend are not reachable 
 
 ```
 app/
-  main.py                FastAPI app, middleware, router registration
+  main.py                FastAPI app, middleware, router registration, /health and /health/ready
   api/                   HTTP layer (schemas, auth dependencies, status codes)
     auth.py              /auth/login, /auth/me, /auth/google/*
     employees.py         /employees CRUD (+ manager team scope)
@@ -217,11 +222,12 @@ app/
     reports.py           /reports/attendance|overtime|leave (.xlsx)
     users.py             /users (admin; limit/offset, X-Total-Count)
   services/              Business logic & calculations (framework-free; reused by the AI)
-  ai/                    router.py (intent + controlled retrieval), guardrails.py, prompts.py, llm.py
+  ai/                    router.py (intent + controlled retrieval), guardrails.py, prompts.py, llm.py,
+                         grounding.py (number post-check of LLM answers)
   rag/                   document_loader.py, chunker.py, embeddings.py, retriever.py
   database/              connection.py, models.py, queries.py
   utils/                 security.py (bcrypt/JWT, load_secret), dependencies.py (auth/RBAC), oauth.py,
-                         rate_limit.py (login/chat 429s), pagination.py (X-Total-Count)
+                         rate_limit.py (login/chat 429s), pagination.py (X-Total-Count), logging.py (LOG_LEVEL)
   data/                  seed_data.json, policies.json (built-in policy fallback)
 alembic/                 migrations (head: f6a7b8c9d0e1 — holidays + attendance_corrections)
 frontend/
@@ -239,7 +245,8 @@ scripts/
   run_tests.py           canonical test runner
   db_snapshot.py         prove tests leave the DB unchanged (save / diff / isolate)
   ui_qa.py               browser QA harness (Playwright + installed Edge; requirements-dev.txt)
-  smoke_test_chat.py     manual chat smoke test
+  smoke_test_chat.py     manual chat smoke test (needs the backend running)
+  verify_real_llm.py     controlled check of the full chat path against the REAL LLM (context, answer, grounding, log)
 sample_documents/        demo HR policies for RAG
 tests/                   standalone test scripts (see §9); helpers.py = TrackingClient for /chat tests
 documents/               uploaded files (git-ignored)
@@ -257,7 +264,7 @@ documents/               uploaded files (git-ignored)
 | Payroll | HR/Admin monthly payroll register + totals and **Generate payroll** (payroll engine: loss of pay for absences / half days / unpaid leave, PF 12 % of earned basic, overtime at 1.5× — PROJECT_DECISIONS D-021); **Mark as paid** (irreversible lock); employees see their payslips (printable). |
 | Documents | HR/Admin upload PDF/DOCX/TXT → indexed for the AI; versioning; archive; everyone can list/download. |
 | Reports | Attendance, Overtime, Leave Excel exports by month/year/department (PRD §22 summary columns). |
-| AI Assistant | Natural-language Q&A over HR data + documents with intent, source and confidence chips; history. |
+| AI Assistant | Natural-language Q&A over HR data + documents with intent, source and confidence chips (incl. "Needs clarification", "Check figures"); tables for lists; history. |
 | Settings (admin) | Users & roles (change role, activate/deactivate), AI chat audit log, policy reference. |
 
 ## 7. Roles and permissions
@@ -277,7 +284,7 @@ documents/               uploaded files (git-ignored)
 | Upload/archive documents | — | — | ✅ | ✅ |
 | Excel reports | — | — | ✅ | ✅ |
 | Users & roles, chat audit log | — | — | — | ✅ |
-| AI chat | own data + policies + holidays | + team attendance/leave and team rankings (no team salary) | HR data | everything |
+| AI chat | own data + policies + holidays | + team attendance/leave, team lists and rankings (no team salary) | HR data incl. department payroll totals | everything |
 
 "Team" = the manager plus employees whose `manager_id` is the manager. Enforced in the backend
 (`employee_service.get_scope_employee_ids`, `require_role`, `guardrails.check_rbac_access`); the UI only hides what you can't use.
@@ -292,7 +299,10 @@ documents/               uploaded files (git-ignored)
 | `SESSION_SECRET_KEY` | Cookie session for OAuth state — **≥ 32 bytes**, required (the app refuses to start otherwise) |
 | `RATE_LIMIT_*`, `TRUSTED_PROXY_IPS` | Optional login/chat rate limits and the proxies whose `X-Forwarded-For` is trusted (see `.env.example`, D-031) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Google OAuth (redirect `http://localhost:3000/api/auth/google/callback`, via the frontend proxy; D-041) |
+| `GOOGLE_ALLOWED_DOMAINS` | Optional, comma-separated: verified Google accounts of these domains may create their own employee account on first sign-in. Empty (default) = invite-only (D-045) |
 | `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` | OpenAI-compatible LLM endpoint |
+| `LLM_TIMEOUT` / `LLM_MAX_RETRIES` / `LLM_RETRY_BACKOFF` | `30` s / `1` retry (connect errors, 429/502/503/504 only) / `1.0` s |
+| `LOG_LEVEL` | Operational log level of the `app.*` loggers (default `INFO`) |
 | `BACKEND_URL` | Where the Bun server proxies `/api/*` (default `http://localhost:8000`) |
 | `FRONTEND_URL` | Where Google login returns with `#token=` (default `http://localhost:3000`) |
 | `DOCUMENTS_DIR` | Optional storage dir for uploads (default `./documents`) |
@@ -301,7 +311,7 @@ documents/               uploaded files (git-ignored)
 
 ```powershell
 .venv\Scripts\activate
-python scripts/run_tests.py            # all 37 test files (877 checks, ~2 min)
+python scripts/run_tests.py            # all 39 test files (1035 checks, ~3 min)
 python scripts/run_tests.py rag hrms   # subset by filename
 python tests/test_rag.py               # one file
 ```
@@ -313,14 +323,17 @@ python scripts/run_tests.py
 python scripts/db_snapshot.py diff before.json     # -> "Database unchanged"
 python scripts/db_snapshot.py isolate              # which test file (if any) changes the DB
 ```
-The LLM is always mocked.
-Key suites: `test_question_bank.py` (**PRD §30 question bank**: 23 normal / 11 incorrect / 14 security / 14 calculation
-questions + 11 RAG checks through `POST /chat`, expected numbers computed from MySQL in the test),
+The LLM is always mocked (the real provider is checked manually with `python scripts/verify_real_llm.py`, docs/AI.md §11.1).
+Key suites: `test_question_bank.py` (**PRD §30 question bank**: 23 normal / 11 incorrect / 18 security / 14 calculation
+/ 21 PRD-capability / 13+8 no-caller-substitution / 32 session-9 (names, ambiguity, group tools) questions + 11 RAG checks
+through `POST /chat`, expected numbers computed from MySQL in the test; 151 checks),
+`test_production_hardening.py` (grounding post-check, health/readiness, LLM retry, new services vs SQL, 33),
 `test_holidays_corrections.py` (holidays, attendance corrections, mark-paid, pagination, 73),
 `test_pagination_cleanups.py` (`/users` `/leaves` `/documents` pagination, user service, chat confidence, 24), `test_security_hardening.py`
 (secrets + rate limits, 32),
 `test_hrms_endpoints.py` (HRMS APIs, 88 checks), `test_payroll.py` (payroll engine, 36), `test_rag.py` (RAG + guardrails, 38),
-`test_rbac_matrix.py` (permissions, 77), `test_chat_api.py`, `test_ai_router.py`, `test_reports_api.py`.
+`test_rbac_matrix.py` (permissions, 77), `test_chat_api.py` (incl. LLM/DB failure handling, 41), `test_oauth_google.py`
+(incl. invite-only / verified email, 55), `test_ai_router.py`, `test_reports_api.py`.
 
 Frontend: `cd frontend && bunx tsc --noEmit -p . && bun run build`.
 
@@ -329,6 +342,7 @@ Browser QA (both servers running, Microsoft Edge installed):
 pip install -r requirements-dev.txt     # playwright (uses the installed Edge, no browser download)
 python scripts/ui_qa.py                 # 4 roles × 1440/1024/390 px × all pages -> screenshots + "0 issue(s)"
 python scripts/ui_qa.py --roles admin --widths 1280 --out qa_shots
+python scripts/ui_qa.py --base http://localhost:3001   # when :3000 is taken (e.g. by the Docker stack)
 ```
 
 ## 10. API overview
@@ -346,8 +360,13 @@ The frontend calls everything under `/api`. Architecture: [`docs/ARCHITECTURE.md
    redirect URI `http://localhost:3000/api/auth/google/callback` (D-041; this is what `.env.example` ships and is the only
    one that works in Docker). `http://localhost:8000/auth/google/callback` is only for running the backend directly.
 3. Put the client ID/secret in `.env`. The login page's "Sign in with Google" goes (through the `/api` proxy) to
-   `/api/auth/google/login?next=frontend` and returns to `FRONTEND_URL/login#token=…`. For a deployment, the redirect URI can
-   use your public `<frontend>/api/auth/google/callback`.
+   `/api/auth/google/login?next=frontend` and returns to `FRONTEND_URL/login#token=…` (or `#error=<reason>`, shown on the
+   login page). For a deployment, the redirect URI can use your public `<frontend>/api/auth/google/callback`.
+4. **Who may sign in (D-045):** an existing account whose email matches the Google account's **verified** email (the
+   Google identity is linked on first use). Unknown Google accounts are refused ("There is no HR account for this Google
+   account…") unless their domain is in `GOOGLE_ALLOWED_DOMAINS`, in which case an `employee` account is created. So the
+   normal flow is: HR adds the employee (Employees → Add, with their work email and an initial password — the form
+   requires one for a login), then the employee can sign in with either.
 
 ## 12. Current status, known issues, remaining work
 

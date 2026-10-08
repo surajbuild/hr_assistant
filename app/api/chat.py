@@ -16,13 +16,19 @@ POST /chat flow:
     5. Fetch verified data via services (no arbitrary SQL):
          POLICY → RAG over uploaded documents, falling back to policies.json.
          Others → controlled service calls with RBAC checks.
+       A retrieval/database failure → fixed "could not retrieve" answer (no LLM call), confidence `unavailable`.
+       A clarification or "employee not found" is answered by the router itself (direct_answer, no LLM call).
     6. Pass structured context + question to the LLM with anti-hallucination prompts.
-    7. Log interaction into chat_logs.
+       LLM failure → "temporarily unavailable" answer, confidence `unavailable` (never `data_verified`).
+       Grounding post-check (D-044): a number in the answer that is not in the verified context or the question
+       → confidence `unverified`, chat_logs.error `UNVERIFIED_NUMBERS: …` (the answer text is not changed).
+    7. Log interaction into chat_logs (also for refusals and failures; the error column says what failed).
     8. Return answer + source/confidence metadata.
 """
 
+import logging
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -30,12 +36,15 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.ai.grounding import ungrounded_numbers
 from app.ai.guardrails import PROMPT_INJECTION_REFUSAL, detect_prompt_injection, sanitize_question
 from app.ai.llm import LLMError, generate_response
 from app.ai.prompts import SYSTEM_HR_ASSISTANT_PROMPT, build_chat_prompt
 from app.ai.router import (
+    CLARIFICATION_PREFIX,
     Intent,
     classify_intent,
+    direct_answer,
     holiday_calendar_context,
     retrieve_hr_context,
     retrieve_policy_context,
@@ -47,8 +56,14 @@ from app.utils.dependencies import get_current_user, require_role
 from app.utils.pagination import set_total_count
 
 router = APIRouter(tags=["AI Chat"])
+logger = logging.getLogger("app.chat")
+
+MAX_ERROR_LOG_CHARS = 500  # chat_logs.error keeps the reason, not whole provider responses
 
 NO_DOCUMENT_ANSWER = "I could not find this information in the available HR documents."
+LLM_UNAVAILABLE_ANSWER = "The AI service is temporarily unavailable. Please try again."
+RETRIEVAL_FAILED_ANSWER = "I could not retrieve the HR data needed to answer this right now. Please try again later."
+UNEXPECTED_ERROR_ANSWER = "An unexpected error occurred while processing your request."
 
 
 # ---------------------------------------------------------------------------
@@ -105,18 +120,33 @@ class ChatLogItem(ChatHistoryItem):
     error: Optional[str] = None
 
 
-def _confidence(source: str, denied: bool, context: str, answer: str = "") -> str:
+def _confidence(
+    source: str,
+    denied: bool,
+    context: str,
+    answer: str = "",
+    unavailable: bool = False,
+    unverified: bool = False,
+) -> str:
+    # No answer was produced (data retrieval or the LLM failed) — never report that as verified data.
+    if unavailable:
+        return "unavailable"
     if denied:
         return "access_denied"
     # The LLM may report that the retrieved context did not contain the answer (KI-035).
     if answer.strip().lower().startswith(NO_DOCUMENT_ANSWER.lower().rstrip(".")):
         return "not_found"
+    # The answer contains a number the verified context does not (D-044) — never labelled as verified.
+    if unverified:
+        return "unverified"
     if source == "document_rag":
         return "document_grounded"
     if source == "policies.json":
         return "policy_reference"
     if source == "general":
         return "general"
+    if context.startswith(CLARIFICATION_PREFIX):
+        return "clarification_needed"
     lowered = context.lower()
     if lowered.startswith("no ") or "not found" in lowered or "no employee record" in lowered:
         return "not_found"
@@ -157,6 +187,8 @@ def chat_endpoint(
     page: Optional[int] = None
     sources: List[Dict[str, Any]] = []
     denied = False
+    unavailable = False
+    unverified = False
     context_str = ""
 
     # 1. Prompt-injection guardrail — no data is touched for these requests
@@ -175,31 +207,46 @@ def chat_endpoint(
         # 3. Retrieve Controlled Data Context
         #    POLICY → search uploaded documents. UNKNOWN → also try the documents: a strong
         #    match (e.g. "how many days can I work from home?") re-routes the question to POLICY.
-        policy_hit = None
-        if intent in (Intent.POLICY, Intent.UNKNOWN):
-            policy_hit = retrieve_policy_context(db, cleaned_question)
-            if policy_hit and intent == Intent.UNKNOWN:
-                intent = Intent.POLICY
-                intent_value = intent.value
-        if policy_hit:
-            context_str, primary_file, page, sources = policy_hit
-            data_source = "document_rag"
-            calendar_context = holiday_calendar_context(db, cleaned_question)
-            if calendar_context:
-                context_str += "\n\n" + calendar_context
-        else:
-            context_str, data_source, denial_reason = retrieve_hr_context(
-                db, current_user, intent, cleaned_question
-            )
+        #    A database / retrieval failure is answered and logged here instead of becoming a 500
+        #    without a chat_logs row.
+        data_source = "error"
+        try:
+            policy_hit = None
+            if intent in (Intent.POLICY, Intent.UNKNOWN):
+                policy_hit = retrieve_policy_context(db, cleaned_question)
+                if policy_hit and intent == Intent.UNKNOWN:
+                    intent = Intent.POLICY
+                    intent_value = intent.value
+            if policy_hit:
+                context_str, primary_file, page, sources = policy_hit
+                data_source = "document_rag"
+                calendar_context = holiday_calendar_context(db, cleaned_question)
+                if calendar_context:
+                    context_str += "\n\n" + calendar_context
+            else:
+                context_str, data_source, denial_reason = retrieve_hr_context(
+                    db, current_user, intent, cleaned_question
+                )
+        except Exception as exc:
+            db.rollback()  # a failed query leaves the session unusable for the log write below
+            error_log = f"RETRIEVAL_ERROR: {type(exc).__name__}: {str(exc)[:MAX_ERROR_LOG_CHARS]}"
+            logger.exception("Chat retrieval failed (user_id=%s, intent=%s)", current_user.id, intent_value)
+            answer = RETRIEVAL_FAILED_ANSWER
+            unavailable = True
+            data_source, context_str, page, sources = "error", "", None, []
 
+        final_answer = None if unavailable else direct_answer(context_str)
         if denial_reason:
             # Access denied by RBAC guardrail — do not query the LLM
             answer = denial_reason
             error_log = "RBAC_ACCESS_DENIED"
             denied = True
-        else:
+        elif final_answer is not None:
+            # Clarification / employee not found: the router already wrote the answer (D-044) — no LLM call
+            answer = final_answer
+        elif not unavailable:  # nothing was retrieved after a failure → the LLM is not called
             # 4. Generate Grounded Response via LLM
-            prompt = build_chat_prompt(cleaned_question, context_str, intent_value)
+            prompt = build_chat_prompt(cleaned_question, context_str, intent_value, today=date.today())
             if intent == Intent.POLICY:
                 prompt += (
                     f"\n\nIf the excerpts do not contain the answer, reply exactly: \"{NO_DOCUMENT_ANSWER}\""
@@ -210,11 +257,24 @@ def chat_endpoint(
                     system_prompt=SYSTEM_HR_ASSISTANT_PROMPT,
                 )
             except LLMError as exc:
-                error_log = str(exc)
-                answer = "The AI service is temporarily unavailable. Please try again."
+                error_log = str(exc)[:MAX_ERROR_LOG_CHARS]
+                logger.warning("LLM call failed (user_id=%s): %s", current_user.id, type(exc).__name__)
+                answer = LLM_UNAVAILABLE_ANSWER
+                unavailable = True
             except Exception as exc:
-                error_log = f"Unexpected error: {exc}"
-                answer = "An unexpected error occurred while processing your request."
+                error_log = f"Unexpected error: {exc}"[:MAX_ERROR_LOG_CHARS]
+                logger.exception("Unexpected chat error (user_id=%s)", current_user.id)
+                answer = UNEXPECTED_ERROR_ANSWER
+                unavailable = True
+            else:
+                # 5. Grounding post-check: every number must come from the verified context or the question
+                if data_source != "general":
+                    stray = ungrounded_numbers(answer, f"{context_str}\n{cleaned_question}\n{date.today().isoformat()}")
+                    if stray:
+                        unverified = True
+                        error_log = f"UNVERIFIED_NUMBERS: {', '.join(stray)}"[:MAX_ERROR_LOG_CHARS]
+                        logger.warning("Answer has numbers not in the verified context (user_id=%s, intent=%s)",
+                                       current_user.id, intent_value)
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -235,17 +295,17 @@ def chat_endpoint(
             )
         )
         db.commit()
-    except Exception as log_exc:
+    except Exception:
         db.rollback()
         # Logging failure should not crash the user's response
-        print(f"[WARNING] Failed to write chat log: {log_exc}")
+        logger.exception("Failed to write chat log (user_id=%s)", current_user.id)
 
     return ChatResponse(
         question=raw_question,
         intent=intent_value,
         answer=answer,
         source=display_source,
-        confidence=_confidence(data_source, denied, context_str, answer),
+        confidence=_confidence(data_source, denied, context_str, answer, unavailable, unverified),
         page=page,
         sources=sources,
     )
