@@ -17,4 +17,10 @@ const app = (
 );
 
 // https://bun.com/docs/bundler/hot-reloading#import-meta-hot-data
-(import.meta.hot.data.root ??= createRoot(elem)).render(app);
+// import.meta.hot is only available in Bun's dev server (HMR). In production
+// builds it is undefined, so we must guard against it.
+if (import.meta.hot) {
+  (import.meta.hot.data.root ??= createRoot(elem)).render(app);
+} else {
+  createRoot(elem).render(app);
+}
